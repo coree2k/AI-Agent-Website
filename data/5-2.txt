@@ -1,0 +1,1093 @@
+### n8n을 활용하여 Slack으로 미국 기업의 재무제표를 자동으로 분석하고, AI가 생성한 투자 보고서를 받아볼 수 있는 시스템 구축 가이드입니다.
+
+## 목차
+
+- [시스템 개요](#시스템-개요)
+- [사전 준비사항](#사전-준비사항)
+- [Slack 설정](#slack-설정)
+- [n8n 워크플로우 구축](#n8n-워크플로우-구축)
+- [AI Agent 설정](#ai-agent-설정)
+- [재무 데이터 수집 도구](#재무-데이터-수집-도구)
+- [고급 활용 팁](#고급-활용-팁)
+- [문제 해결](#문제-해결)
+- [한계점 및 개선 방향](#한계점-및-개선-방향)
+
+## 시스템 개요
+
+이 가이드에서는 Slack을 통해 **미국 기업의 재무제표를 자동으로 분석**하여 투자 리포트를 생성하는 시스템을 구축합니다.
+
+### 워크플로우 구조
+
+> 1. **Slack 메시지 수신** (텍스트/음성) → 2. **메시지 유형 분리** → 3. **AI Agent 분석** → 4. **재무 데이터 수집** → 5. **보고서 생성** → 6. **Slack/Gmail 발송**
+
+![워크플로우 구조](./n8n_Source/05-02/2.%20WF.png)
+
+### 주요 기능
+
+- Slack 텍스트 메시지 및 음성 메시지 모두 지원
+- 미국 상장 기업 자동 분석 (티커 심볼 기반)
+- Yahoo Finance에서 재무제표 3종 자동 수집
+  - 손익계산서 (Income Statement)
+  - 대차대조표 (Balance Sheet)
+  - 현금흐름표 (Cash Flow)
+- GPT-5 기반 AI 투자 분석
+- Markdown 형식의 투자 보고서 자동 생성
+- Slack 채널 + Gmail 동시 발송
+
+### 시스템 통계
+
+- **전체 노드**: 25개
+- **AI Agent**: 1개 (미국 기업 전문)
+- **데이터 수집 도구**: 5개
+- **통합 서비스**: 2개 (Slack, Gmail)
+
+## 사전 준비사항
+
+- n8n 설치 및 실행
+- Slack 워크스페이스 및 Bot 설정
+- OpenAI API 키 (GPT-5 모델)
+- Tavily API 키 (웹 검색 및 Yahoo Finance 크롤링용)
+- Gmail 계정 (선택사항)
+
+## Slack 설정
+
+### 1. Slack App 생성
+
+1. [Slack API](https://api.slack.com/apps)에 접속하여 "Create New App" 클릭
+2. "From scratch" 선택
+3. App 이름과 워크스페이스 선택
+
+### 2. Bot Token Scopes 설정
+
+**OAuth & Permissions** 메뉴에서 다음 권한 추가:
+
+- `app_mentions:read` - 멘션 읽기
+- `chat:write` - 메시지 전송
+- `channels:history` - 채널 메시지 읽기
+- `files:read` - 파일 읽기 (음성 메시지용)
+
+### 3. Event Subscriptions 활성화
+
+1. **Event Subscriptions** 메뉴 활성화
+2. **Subscribe to bot events** 추가:
+   - `app_mention`
+   - `message.channels`
+
+### 4. 채널에 Bot 추가
+
+분석을 받을 Slack 채널에 Bot을 초대합니다:
+```
+/invite @YourBotName
+```
+
+## n8n 워크플로우 구축
+
+### 1. Slack Trigger 설정
+
+1. **Slack Trigger 노드 추가**
+2. **기본 설정**:
+   - Trigger: `app_mention`, `message`
+   - Channel ID: `n8n-finance-analysis-usa` (분석 채널)
+   - Credentials: Slack API 연동
+
+### 2. Switch 노드로 메시지 유형 분리
+
+1. **Switch 노드 추가**
+2. **조건 설정**:
+
+**Route 1 - 음성 메시지**:
+```
+조건: {{ $json.subtype }} exists
+→ Wait → Get a file → If (transcription 확인) → Edit Fields1
+```
+
+**Route 2 - 텍스트 메시지**:
+```
+조건: {{ $json.blocks[0].elements[0].elements[0].type }} equals "text"
+→ Edit Fields → AI Agent
+```
+
+### 3. 음성 메시지 처리 플로우
+
+음성 메시지를 지원하려면:
+
+**3-1. Wait 노드**
+- Amount: 10초
+- Slack의 음성 → 텍스트 변환 대기
+
+**3-2. Get a file 노드**
+```
+Resource: file
+Operation: get
+File ID: {{ $json.files[0].id }}
+Authentication: OAuth2
+```
+
+**3-3. If 노드**
+```
+조건: {{ $json.transcription.status }} equals "processing"
+True → Wait (재시도)
+False → Edit Fields1 (텍스트 추출)
+```
+
+**3-4. Edit Fields1 노드**
+```
+Name: input
+Value: {{ $json.transcription.preview.content }}
+```
+
+### 4. 텍스트 메시지 처리
+
+**Edit Fields 노드**:
+```
+Name: input
+Value: {{ $json.text }}
+```
+
+### 5. AI Agent 설정
+
+1. **AI Agent 노드 추가**
+2. **기본 설정**:
+   - Type: Agent
+   - Prompt Type: Define
+   - Text: `{{ $json.input }} {{ $('Slack Trigger1').item.json.channel }}`
+
+**연결된 컴포넌트**:
+- Language Model: OpenAI Chat Model (GPT-5)
+- Memory: Simple Memory (Buffer Window)
+- Output Parser: Structured Output Parser
+- Tools: Search, Get Price, Get Income Statement, Get Balance Sheet, Get Cash Flow
+
+**System Prompt** (핵심 부분):
+```
+# 금융 분석 AI Agent
+
+당신은 미국 주식 전문 금융 애널리스트이자 자동화된 투자 리서치 시스템입니다.
+
+## 핵심 임무
+1. 티커 심볼을 정확히 식별 (TSLA, AAPL, NVDA 등)
+2. 필요한 도구만 선별적으로 호출 (1~3개)
+3. 전략적 통찰이 담긴 투자 보고서를 Markdown 형식으로 작성
+
+## 사용 가능한 도구 (5가지)
+
+### 1. Search (인터넷 검색)
+- 최근 뉴스, 급등/급락 이유, CEO 발언, 실적발표 등
+- query: 검색어
+- topic: "general" 또는 "news"
+
+### 2. Get Price (주가 히스토리)
+- 주가 흐름, 차트, 최근 가격, 변동성
+- URL: https://finance.yahoo.com/quote/{TICKER}/history/
+
+### 3. Get Income Statement (손익계산서)
+- 매출, 순이익, 영업이익, 이익률, 수익성
+- URL: https://finance.yahoo.com/quote/{TICKER}/financials/
+
+### 4. Get Balance Sheet (대차대조표)
+- 자산, 부채, 자본, 유동비율, 부채비율
+- URL: https://finance.yahoo.com/quote/{TICKER}/balance-sheet/
+
+### 5. Get Cash Flow (현금흐름표)
+- FCF, 현금창출력, 투자/재무활동
+- URL: https://finance.yahoo.com/quote/{TICKER}/cash-flow/
+
+## 출력 형식 (JSON)
+{
+  "ticker": "AAPL",
+  "subject": "애플(AAPL) 2025년 10월 투자 분석",
+  "text": "# 애플(AAPL) 투자 분석\n\n..."
+}
+
+## 중요 규칙
+- Markdown 표(table) 사용 금지 → 불릿 리스트 사용
+- 한국어로 작성
+- 분량: 1,000~2,000자
+- 이모지 활용: 📈📉💰🔍
+```
+
+### 6. Language Model 설정
+
+**OpenAI Chat Model 노드**:
+```
+Model: gpt-5
+Temperature: 기본값
+```
+
+### 7. Memory 설정
+
+**Simple Memory 노드**:
+```
+Session ID Type: Custom Key
+Session Key: {{ $('Slack Trigger1').item.json.channel }}
+Context Window Length: 10
+```
+
+채널별로 독립적인 대화 기록을 유지합니다.
+
+### 8. Output Parser 설정
+
+**Structured Output Parser 노드**:
+```json
+{
+  "ticker": "NFLX",
+  "subject": "넷플릭스 광고 매출 분기별 성장세 분석 - 2025년 5월",
+  "text": "# 넷플릭스 광고 매출 분기별 성장세(2023~2025)\n\n..."
+}
+```
+
+JSON 형식으로 일관된 출력을 보장합니다.
+
+### 9. Slack 메시지 전송
+
+**Send a message 노드**:
+```
+Authentication: OAuth2
+Select: channel
+Channel ID: n8n-finance-analysis-usa
+Text: {{ $json.output.text }}
+Options: includeLinkToWorkflow = false
+```
+
+### 10. Gmail 전송 (선택사항)
+
+**Gmail 노드**:
+```
+Send To: coree2k.biz@gmail.com
+Subject: {{ $('AI Agent').item.json.output.subject }}
+Message: {{ $json.message.text }}
+Options: appendAttribution = false
+```
+
+## 재무 데이터 수집 도구
+
+모든 도구는 **HTTP Request Tool** 노드를 사용하며, Tavily API로 Yahoo Finance를 크롤링합니다.
+
+### 공통 설정
+
+- **Authentication**: HTTP Header Auth
+- **Header**: `Content-Type: application/json`
+- **Tavily API Key**: Header Auth Credentials
+
+### 1. Search (뉴스/리서치 검색)
+
+**기본 설정**:
+```
+Tool Description: 인터넷을 활용해 특정 회사에 대한 추가 리서치가 필요할 때 사용
+Method: POST
+URL: https://api.tavily.com/search
+```
+
+**Body (JSON)**:
+```json
+{
+  "query": "{{ $fromAI('query','search term') }}",
+  "topic": "{{ $fromAI('topic','general or news') }}",
+  "search_depth": "advanced",
+  "chunks_per_source": 3,
+  "max_results": 1,
+  "time_range": null,
+  "days": 7,
+  "include_answer": false,
+  "include_raw_content": false,
+  "include_images": true,
+  "include_image_descriptions": false,
+  "include_domains": [],
+  "exclude_domains": []
+}
+```
+
+**사용 예시**:
+```
+질문: "테슬라 급등 이유는?"
+→ query: "Tesla stock surge reason"
+→ topic: "news"
+```
+
+### 2. Get Price (주가 히스토리)
+
+**기본 설정**:
+```
+Tool Description: 특정 회사의 주가 데이터가 필요할 때 Yahoo Finance에서 수집
+Method: POST
+URL: https://api.tavily.com/extract
+```
+
+**Body (JSON)**:
+```json
+{
+  "urls": "{{ $fromAI('url','https://finance.yahoo.com/quote/{ticker}/history/') }}",
+  "include_images": false,
+  "extract_depth": "basic"
+}
+```
+
+**사용 예시**:
+```
+질문: "애플 주가 흐름은?"
+→ url: "https://finance.yahoo.com/quote/AAPL/history/"
+```
+
+### 3. Get Income Statement (손익계산서)
+
+**Body (JSON)**:
+```json
+{
+  "urls": "{{ $fromAI('url','https://finance.yahoo.com/quote/{ticker}/financials/') }}",
+  "include_images": false,
+  "extract_depth": "basic"
+}
+```
+
+### 4. Get Balance Sheet (대차대조표)
+
+**Body (JSON)**:
+```json
+{
+  "urls": "{{ $fromAI('url','https://finance.yahoo.com/quote/{ticker}/balance-sheet/') }}",
+  "include_images": false,
+  "extract_depth": "basic"
+}
+```
+
+### 5. Get Cash Flow (현금흐름표)
+
+**Body (JSON)**:
+```json
+{
+  "urls": "{{ $fromAI('url','https://finance.yahoo.com/quote/{ticker}/cash-flow/') }}",
+  "include_images": false,
+  "extract_depth": "basic"
+}
+```
+
+## 고급 활용 팁
+
+### Markdown 포맷 최적화
+
+Slack에서 표가 지원되지 않으므로 불릿 리스트 사용:
+
+```markdown
+## 💰 재무 성과 (최근 4분기)
+
+**매출 (Revenue)**
+• 2024 Q4: $94.9B
+• 2024 Q3: $89.5B
+• YoY 성장률: +6.0%
+
+**순이익 (Net Income)**
+• 2024 Q4: $23.6B
+• 2024 Q3: $22.9B
+• YoY 성장률: +3.1%
+
+**영업이익률 (Operating Margin)**
+• 2024 Q4: 30.5%
+• 2024 Q3: 30.2%
+• 변화: +0.3%p
+```
+
+### 보고서 구조
+
+```markdown
+# [기업명(티커)] 투자 분석
+
+## 📈 핵심 요약
+- 현재 주가
+- 시가총액
+- 투자 의견
+
+## 💰 재무 성과
+- 매출
+- 순이익
+- 영업이익률
+
+## 🔍 투자 포인트
+### ✅ 강점
+1. ...
+2. ...
+
+### ⚠️ 리스크
+1. ...
+2. ...
+
+## 📊 밸류에이션
+- PER
+- PBR
+- 배당수익률
+
+## 🎯 결론
+종합 평가 및 투자 의견
+```
+
+### 도구 선택 전략
+
+**질문 유형별 도구 조합**:
+
+1. **실적 분석**: Get Income Statement + Get Price
+2. **급등/급락 이유**: Search + Get Price
+3. **재무 안정성**: Get Balance Sheet + Get Cash Flow
+4. **종합 분석**: 3~4개 도구 조합
+5. **주가만 확인**: Get Price만
+
+## 문제 해결
+
+### 자주 발생하는 문제들
+
+**1. Slack OAuth 인증 실패**
+- Bot Token Scopes 확인
+- 앱이 채널에 추가되었는지 확인
+- Redirect URI 설정 확인
+
+**2. 티커 심볼 인식 실패**
+```
+입력: "테슬라 분석해줘"
+→ AI가 TSLA로 변환
+
+입력: "005930 분석해줘"
+→ 미국 티커가 아니므로 오류
+
+해결: 영문 티커 또는 영문 기업명 사용
+```
+
+**3. Yahoo Finance 크롤링 실패**
+- Tavily API 키 확인
+- API 사용량 제한 확인 (일일 한도)
+- 티커 심볼이 정확한지 확인
+
+**4. 음성 메시지 처리 실패**
+- Wait 노드 10초 대기 확인
+- Slack 파일 권한 확인 (`files:read`)
+- transcription.status가 "complete"인지 확인
+
+**5. 메시지 전송 오류**
+```
+오류: "channel_not_found"
+→ 채널 ID 확인, Bot이 채널에 초대되었는지 확인
+
+오류: "invalid_auth"
+→ Slack OAuth Token 재발급
+
+오류: JSON parsing error
+→ 특수문자 이스케이프 확인 (\, ", ' 등)
+```
+
+**6. 빈 응답 또는 불완전한 데이터**
+- Yahoo Finance 페이지 구조 변경 가능성
+- Tavily의 extract_depth를 "advanced"로 변경
+- 다른 티커로 테스트
+
+### 디버깅 팁
+
+1. **n8n 실행 로그 확인**: 각 노드의 입출력 데이터 검토
+2. **Tavily API 직접 테스트**: Postman 등으로 API 호출 테스트
+3. **Yahoo Finance URL 확인**: 브라우저로 직접 접속하여 데이터 존재 확인
+4. **Slack Bot 로그**: Slack App 관리 페이지에서 이벤트 로그 확인
+
+## 한계점 및 개선 방향
+
+### 현재 한계점
+
+1. **미국 기업만 지원**
+   - 한국 기업(.KS) 분석 불가
+   - 다른 국가 시장 미지원
+
+2. **데이터 정확성**
+   - Yahoo Finance 크롤링 결과의 정확성 의존
+   - 실시간 데이터가 아닌 지연된 데이터
+   - 페이지 구조 변경 시 크롤링 실패 가능
+
+3. **비용**
+   - OpenAI GPT-5: API 호출당 비용
+   - Tavily API: 월간 사용량 제한
+
+4. **처리 시간**
+   - 복잡한 분석 시 1~2분 소요
+   - 여러 도구 사용 시 시간 증가
+
+5. **Slack 제약**
+   - Markdown 표 미지원
+   - 메시지 길이 제한 (4,000자)
+   - 이미지/차트 생성 불가
+
+### 개선 방향
+
+1. **다중 시장 지원**
+   - 한국 시장(.KS, .KQ) 추가
+   - 유럽, 아시아 시장 확장
+   - 시장별 Agent 분리
+
+2. **실시간 데이터**
+   - Alpha Vantage API 통합
+   - IEX Cloud API 연동
+   - SEC EDGAR API 직접 연동
+
+3. **차트 생성**
+   - Chart.js 또는 Plotly 활용
+   - 주가 차트 자동 생성
+   - 재무 데이터 시각화
+
+4. **포트폴리오 관리**
+   - 보유 종목 추적
+   - 수익률 계산
+   - 알림 시스템
+
+5. **비교 분석**
+   - 동종업계 자동 비교
+   - 경쟁사 분석
+   - 벤치마크 지표
+
+## 사용 예시
+
+### 예시 1: 기본 실적 분석
+
+**입력 (Slack)**:
+```
+테슬라 최근 실적 어때?
+```
+
+**처리 과정**:
+1. AI Agent가 "테슬라" → TSLA 변환
+2. Get Income Statement 호출
+3. Get Price 호출 (주가 반응 확인)
+4. 데이터 분석 및 보고서 생성
+5. Slack + Gmail 발송
+
+**출력 예시**:
+```markdown
+# 테슬라(TSLA) 2025년 3분기 실적 분석
+
+## 📈 핵심 요약
+- **현재 주가**: $242.15 (+3.2%)
+- **시가총액**: $770B
+- **투자 의견**: 매수 (Buy)
+
+## 💰 재무 성과
+
+**매출 (Revenue)**
+• 2025 Q3: $25.2B
+• 2024 Q3: $23.4B
+• YoY 성장률: +7.7%
+
+**순이익 (Net Income)**
+• 2025 Q3: $2.2B
+• 2024 Q3: $1.9B
+• YoY 성장률: +15.8%
+
+## 🔍 투자 포인트
+
+### ✅ 강점
+1. **전기차 판매 증가**: 48만대 납품 (+8% QoQ)
+2. **에너지 사업 성장**: 배터리 저장 매출 2배 증가
+3. **마진 개선**: 영업이익률 10.8% 달성
+
+### ⚠️ 리스크
+1. **경쟁 심화**: BYD, 현대차 추격
+2. **중국 시장 불확실성**: 관세 리스크
+
+## 📊 밸류에이션
+- **PER**: 65.2배 (고평가 구간)
+- **PBR**: 12.8배
+- **배당수익률**: 0% (무배당)
+
+## 🎯 결론
+테슬라는 전기차 및 에너지 사업의 성장으로 견조한 실적을 기록 중. 
+높은 밸류에이션이 부담이나, 장기 성장 스토리는 여전히 유효.
+
+---
+*본 보고서는 2025-10-11 기준으로 작성되었습니다.*
+```
+
+### 예시 2: 급등 이유 분석
+
+**입력 (Slack)**:
+```
+엔비디아 급등 이유는?
+```
+
+**처리 과정**:
+1. AI Agent가 "엔비디아" → NVDA 변환
+2. Search 호출 (topic="news")
+3. Get Price 호출 (급등 확인)
+4. 뉴스 + 주가 데이터 통합 분석
+
+**출력 예시**:
+```markdown
+# 엔비디아(NVDA) 급등 분석 - 2025년 10월
+
+## 📈 주가 동향
+- **현재 주가**: $485.20 (+12.5%)
+- **52주 최고가**: $520.30
+- **거래량**: 전일 대비 3.2배 급증
+
+## 📰 급등 이유
+
+### AI 칩 수요 폭증
+• 메타, MS, 구글 등 빅테크의 H200 GPU 대량 주문 발표
+• 2026년 1분기 매출 가이던스 상향 조정 (+25%)
+• AI 인프라 투자 지속 증가
+
+### 경쟁사 대비 우위
+• AMD 대비 2배 빠른 성능
+• 소프트웨어 생태계(CUDA) 압도적 우위
+
+## 🎯 전망
+단기 과열 구간이나, AI 슈퍼사이클은 2~3년 지속 예상.
+목표주가 $550 유지.
+```
+
+### 예시 3: 음성 메시지
+
+**입력 (Slack 음성)**:
+```
+🎤 "애플 재무 구조 어때?"
+```
+
+**처리 과정**:
+1. Slack 음성 → 텍스트 자동 변환
+2. "애플 재무 구조 어때?" 텍스트 추출
+3. Get Balance Sheet + Get Cash Flow 호출
+4. 재무 안정성 분석
+
+## 기술 세부사항
+
+### 사용된 n8n 노드
+
+| 노드 타입 | 버전 | 개수 | 용도 |
+|---------|------|-----|------|
+| Slack Trigger | v1 | 1 | 메시지 수신 |
+| Switch | v3.2 | 1 | 메시지 유형 분리 |
+| Wait | v1.1 | 1 | 음성 처리 대기 |
+| If | v2.2 | 1 | transcription 상태 확인 |
+| Edit Fields | v3.4 | 2 | 데이터 가공 |
+| AI Agent | v2.2 | 1 | 메인 분석 Agent |
+| HTTP Request Tool | v4.2 | 5 | 데이터 수집 |
+| OpenAI Chat Model | v1.2 | 1 | GPT-5 |
+| Memory Buffer Window | v1.3 | 1 | 대화 기억 |
+| Structured Output Parser | v1.3 | 1 | JSON 출력 |
+| Slack | v2.3 | 2 | 파일 다운로드 + 메시지 전송 |
+| Gmail | v2.1 | 1 | 이메일 발송 |
+| Markdown | v1 | 1 | HTML 변환 (미사용) |
+
+**총 노드 수**: 25개
+
+### 외부 API
+
+- **OpenAI GPT-5**: 메인 분석 엔진
+- **Tavily Search API**: 뉴스/리서치 검색
+- **Tavily Extract API**: Yahoo Finance 크롤링
+- **Yahoo Finance**: 재무 데이터 소스
+- **Slack API**: 메시지 수신/발송, 파일 다운로드
+- **Gmail API**: 이메일 발송
+
+### 데이터 플로우
+
+```
+Slack 메시지
+    ↓
+Switch (텍스트/음성 분리)
+    ↓
+Edit Fields (input 필드 생성)
+    ↓
+AI Agent (티커 추출 + 도구 선택)
+    ↓
+HTTP Request Tools (1~5개 병렬 호출)
+    ↓
+AI Agent (데이터 통합 + 보고서 생성)
+    ↓
+Structured Output Parser (JSON 변환)
+    ↓
+Slack + Gmail (동시 발송)
+```
+
+## 결론
+
+이 워크플로우는 Slack 기반의 간편한 인터페이스를 통해 **미국 상장 기업의 재무 분석을 자동화**합니다.
+
+**핵심 장점**:
+- 🤖 완전 자동화: 티커 식별부터 보고서 작성까지
+- 📊 종합 분석: 재무제표 + 뉴스 + 주가 통합
+- 💬 편리한 UX: Slack 텍스트/음성 모두 지원
+- 📧 자동 발송: Slack + Gmail 동시 전송
+
+**활용 시나리오**:
+- 개인 투자자의 종목 분석
+- 애널리스트의 리서치 보조
+- 투자 동호회의 공유 도구
+- 금융 교육 자료
+
+**다음 단계**:
+- 한국 시장 지원 추가 → Multi-Agent 시스템 (51.json 참고)
+- 포트폴리오 추적 기능
+- 차트 시각화
+- 알림 시스템
+
+## 참고 자료
+
+- [n8n 공식 문서](https://docs.n8n.io/)
+- [OpenAI API 문서](https://platform.openai.com/docs)
+- [Tavily API 문서](https://docs.tavily.com/)
+- [Yahoo Finance](https://finance.yahoo.com/)
+- [Slack API 문서](https://api.slack.com/)
+
+---
+
+📄 **JSON 워크플로우 파일**: `52.json`  
+🏢 **대상 시장**: 미국 상장 기업  
+📊 **전체 노드 수**: 25개  
+🤖 **AI Model**: OpenAI GPT-5  
+🔧 **데이터 수집 도구**: 5개
+
+## 부록 A: 전체 워크플로우 JSON
+
+워크플로우를 n8n에 직접 임포트하려면 `52.json` 파일을 사용하세요.
+
+**주요 설정 변경 포인트**:
+1. Slack API Credentials
+2. OpenAI API Key
+3. Tavily API Key
+4. Gmail Credentials (선택사항)
+5. Slack Channel ID
+
+## 부록 B: 주요 미국 기업 티커 심볼
+
+### 빅테크
+- 애플: AAPL
+- 마이크로소프트: MSFT
+- 구글(알파벳): GOOGL, GOOG
+- 아마존: AMZN
+- 메타(페이스북): META
+- 테슬라: TSLA
+
+### 반도체
+- 엔비디아: NVDA
+- AMD: AMD
+- 인텔: INTC
+- 퀄컴: QCOM
+- 마이크론: MU
+- 브로드컴: AVGO
+
+### 금융
+- JP모건: JPM
+- 뱅크오브아메리카: BAC
+- 웰스파고: WFC
+- 골드만삭스: GS
+- 모건스탠리: MS
+
+### 소비재
+- 코카콜라: KO
+- 펩시코: PEP
+- 나이키: NKE
+- 스타벅스: SBUX
+- 맥도날드: MCD
+
+### 헬스케어
+- 존슨앤존슨: JNJ
+- 화이자: PFE
+- 머크: MRK
+- 유나이티드헬스: UNH
+
+### 통신
+- 버라이즌: VZ
+- AT&T: T
+- 티모바일: TMUS
+
+## 부록 C: System Prompt 전체 버전
+
+```markdown
+# 🤖 금융 분석 AI Agent - 시스템 프롬프트
+
+당신은 **미국 주식 전문 금융 애널리스트**이자 자동화된 투자 리서치 시스템입니다.
+
+**현재 날짜**: {{ $today.format('yyyy-MM-dd') }} (한국시간 KST 기준)
+
+---
+
+## 🎯 핵심 임무
+
+사용자 질문을 분석하여:
+1. **티커 심볼을 정확히 식별**
+2. **필요한 도구만 선별적으로 호출** (불필요한 API 호출 최소화)
+3. **전략적 통찰이 담긴 투자 보고서를 Markdown 형식으로 작성**
+
+---
+
+## 🛠️ 사용 가능한 도구 (5가지)
+
+### 1. Search (인터넷 검색)
+**언제 사용?**
+- "최근 뉴스", "급등/급락 이유", "CEO 발언", "실적발표", "M&A 소식"
+- 재무제표만으로 설명 불가능한 정성적 정보
+- 사용자가 "왜", "이유", "배경" 등을 물을 때
+
+**매개변수**:
+- query: 검색어 (예: "Tesla stock surge reason")
+- topic: "general" 또는 "news"
+
+### 2. Get Price (주가 히스토리)
+**언제 사용?**
+- "주가 흐름", "차트", "최근 가격", "변동성"
+- 수익률, 고점/저점, 추세 분석
+- 재무제표 분석 시 주가 반응을 함께 보고 싶을 때
+
+**URL 형식**: https://finance.yahoo.com/quote/{TICKER}/history/
+
+### 3. Get Income Statement (손익계산서)
+**언제 사용?**
+- "매출", "순이익", "영업이익", "이익률", "수익성"
+- "실적", "성장률", "마진" 분석
+- 수익 창출 능력 평가
+
+**URL 형식**: https://finance.yahoo.com/quote/{TICKER}/financials/
+
+### 4. Get Balance Sheet (대차대조표)
+**언제 사용?**
+- "자산", "부채", "자본", "유동비율", "부채비율"
+- "재무 안정성", "현금 보유액", "자산 구조"
+- 재무 건전성 평가
+
+**URL 형식**: https://finance.yahoo.com/quote/{TICKER}/balance-sheet/
+
+### 5. Get Cash Flow (현금흐름표)
+**언제 사용?**
+- "FCF(잉여현금흐름)", "현금창출력", "투자/재무활동"
+- "배당 가능성", "자사주 매입", "설비투자"
+- 실제 현금 유입/유출 확인
+
+**URL 형식**: https://finance.yahoo.com/quote/{TICKER}/cash-flow/
+
+---
+
+## ⚙️ 도구 사용 원칙
+
+### ✅ DO (이렇게 하세요)
+1. 질문 유형에 따라 1~3개 도구만 선택
+2. 티커 심볼을 먼저 추출 (테슬라 → TSLA)
+3. 명시적 키워드 + 문맥을 모두 고려
+4. 데이터 조회 실패 시 대체 방법 제시
+
+### ❌ DON'T (하지 마세요)
+1. 주가만 물어봤는데 재무제표 3종을 다 긁어오기
+2. 티커를 모르면 사용자에게 확인 요청
+3. 에러 발생 시 무시하고 진행
+
+---
+
+## 📐 출력 형식 (반드시 JSON)
+
+{
+  "ticker": "AAPL",
+  "subject": "애플(AAPL) 2025년 10월 투자 분석",
+  "text": "# 애플(AAPL) 투자 분석\n\n..."
+}
+
+### Markdown 보고서 작성 가이드
+
+1. **제목 계층 구조**: H1 → H2 → H3
+2. **표 대신 리스트 사용** (Slack 호환성)
+3. **이모지 활용**: 📈📉💰🔍
+4. **분량**: 1,000~2,000자
+5. **강조 표시**: **볼드**, > 인용구
+
+---
+
+## 🧠 예시 시나리오
+
+### 사용자: "테슬라 최근 실적 어때?"
+**AI 사고 과정**:
+1. 티커 추출: TSLA ✅
+2. 키워드: "실적" → 손익계산서
+3. 도구 선택: Get Income Statement + Get Price
+4. 최종: 2개 도구 호출 → 보고서 작성
+
+### 사용자: "엔비디아 급등 이유는?"
+**AI 사고 과정**:
+1. 티커 추출: NVDA ✅
+2. 키워드: "급등 이유" → 정성적 정보
+3. 도구 선택: Search (topic="news") + Get Price
+4. 최종: 2개 도구 호출 → 보고서 작성
+
+---
+
+## 🎓 추가 지침
+
+- **톤앤매너**: 전문적이되 이해하기 쉽게
+- **객관성 유지**: 단정적 표현 지양
+- **리스크 명시**: 긍정/부정 요소 균형
+- **출처 표기**: Search 도구 사용 시 출처 명시
+- **한국어 우선**: 한국어로 답변
+
+이제 사용자의 질문을 기다립니다. 최고의 투자 인사이트를 제공하겠습니다! 🚀
+```
+
+## 부록 D: Structured Output Parser 예시
+
+```json
+{
+  "ticker": "NFLX",
+  "subject": "넷플릭스 광고 매출 분기별 성장세 분석 - 2025년 5월",
+  "text": "# 넷플릭스 광고 매출 분기별 성장세(2023~2025)\n\n## 📈 성장 추이 요약\n- 넷플릭스의 광고 기반 요금제는 2022년 도입 이후 빠른 속도로 성장 중입니다.\n- 2023년 2분기 가입자 약 1,500만 명 → 2024년 5월 4,000만 명 → 2024년 11월 7,000만 명 → 2025년 5월 9,400만 명을 돌파하며, 1년 새 2배 이상 성장했습니다.\n- 광고 매출 자체는 세부 숫자가 공식 공개되진 않았지만, 광고 플랜 도입 후 매 분기마다 두자릿수 성장을 지속 중인 것으로 분석됩니다.\n- 2025년 1분기 전체 매출은 13% 증가했고, 이 중 광고 매출이 두드러진 기여 요인이라는 점이 실적 발표 및 업계 리서치에서 반복적으로 언급되고 있습니다.\n- 넷플릭스는 현재 다양한 신형 광고 포맷(인터랙티브·일시정지 광고 등) 추가 도입으로, 추가 성장 동력을 확보할 전망입니다.\n\n## 📝 결론\n\n넷플릭스 광고 매출은 가입자 수 폭증과 함께 2023~2025년 동안 분기마다 두자릿수 성장률을 기록 중입니다. 공식 분기별 금액 수치는 미공개지만, 광고 부문이 최근 실적 개선의 핵심 동력임은 명확합니다. 향후 광고 상품 다양화와 글로벌 추가 확산에 따라 성장세가 더 가속화될 가능성이 높습니다."
+}
+```
+
+## 부록 E: Tavily API 사용량 최적화
+
+### API 호출 최소화 전략
+
+1. **캐싱 활용**:
+   - 동일 티커의 중복 호출 방지
+   - 메모리에 최근 조회 결과 저장
+
+2. **도구 선택 최적화**:
+   - 불필요한 재무제표 조회 방지
+   - 질문에 꼭 필요한 도구만 호출
+
+3. **배치 처리**:
+   - 여러 사용자 요청을 모아서 처리
+   - 시간대별 사용량 분산
+
+### Tavily API 쿼터
+
+- **무료 플랜**: 1,000 requests/month
+- **Pro 플랜**: 10,000 requests/month
+- **Enterprise**: Unlimited
+
+**예상 사용량**:
+- 단순 분석 (1~2개 도구): 2 API calls
+- 종합 분석 (3~5개 도구): 5 API calls
+- 하루 10회 분석 = 50 API calls
+- 월 1,000회까지 무료
+
+## 부록 F: 실전 활용 사례
+
+### 사례 1: 데이 트레이딩 보조
+
+**시나리오**: 장중 급등/급락 종목 즉시 분석
+
+**활용법**:
+```
+(10:30) "NVDA 급등 이유는?"
+→ 5분 내 뉴스 + 주가 분석 리포트
+
+(14:00) "TSLA 급락 원인 분석"
+→ 실적 발표 내용 + 애널리스트 의견 요약
+```
+
+**효과**:
+- 빠른 의사결정
+- 감정적 매매 방지
+- 객관적 데이터 기반 판단
+
+### 사례 2: 장기 투자 리서치
+
+**시나리오**: 주말에 다음 주 투자 종목 선정
+
+**활용법**:
+```
+(토요일 오전)
+"애플 재무 안정성 분석"
+"마이크로소프트 실적 추이"
+"테슬라 현금흐름 분석"
+```
+
+**효과**:
+- 심도 있는 분석
+- 여러 종목 비교
+- 투자 아이디어 발굴
+
+### 사례 3: 투자 스터디 그룹
+
+**시나리오**: Slack 채널에서 공동 리서치
+
+**활용법**:
+```
+채널: #investment-study
+
+Member A: "이번 주 추천 종목은?"
+Bot: "NVDA 분석 시작..."
+
+Member B: "@bot AMD는 어때?"
+Bot: "AMD 분석 중..."
+
+→ 실시간 토론 + AI 분석 결합
+```
+
+**효과**:
+- 지식 공유
+- 다양한 관점
+- 학습 효과
+
+### 사례 4: 포트폴리오 모니터링
+
+**시나리오**: 보유 종목 정기 체크
+
+**활용법**:
+```
+(매주 월요일 아침)
+"AAPL 최근 변동사항"
+"MSFT 실적 업데이트"
+"GOOGL 뉴스 확인"
+```
+
+**효과**:
+- 정기적 점검
+- 리밸런싱 타이밍 포착
+- 리스크 관리
+
+## 부록 G: 비교 - 51.json vs 52.json
+
+### 51.json (Multi-Agent)
+- **특징**: 한국 + 미국 통합
+- **노드 수**: 42개
+- **Agent**: 3개 (라우터 + KR + USA)
+- **장점**: 글로벌 커버리지
+- **단점**: 복잡한 구조, 높은 유지보수
+
+### 52.json (Single Agent)
+- **특징**: 미국 전용
+- **노드 수**: 25개
+- **Agent**: 1개 (USA 전문)
+- **장점**: 단순한 구조, 빠른 응답
+- **단점**: 미국만 지원
+
+### 선택 가이드
+
+**52.json을 선택해야 하는 경우**:
+- 미국 시장만 투자
+- 빠른 구축이 중요
+- 간단한 유지보수 선호
+
+**51.json을 선택해야 하는 경우**:
+- 한국 + 미국 동시 투자
+- 글로벌 포트폴리오
+- 향후 확장 계획
+
+## 부록 H: 라이선스 및 주의사항
+
+### API 라이선스
+
+- **OpenAI**: 상업적 사용 가능 (API 약관 준수)
+- **Tavily**: 상업적 사용 가능 (플랜별 제한)
+- **Yahoo Finance**: 비상업적 용도 권장 (공식 API 없음)
+- **Slack**: Bot 사용 약관 준수
+- **Gmail**: API 사용 가이드라인 준수
+
+### 법적 주의사항
+
+1. **투자 조언 아님**: 이 시스템은 정보 제공 목적이며, 공식 투자 자문이 아닙니다.
+2. **데이터 정확성**: 크롤링 데이터의 정확성을 보장하지 않습니다.
+3. **투자 책임**: 모든 투자 결정은 본인 책임입니다.
+4. **저작권**: 생성된 콘텐츠의 저작권은 사용자에게 있습니다.
+
+### 윤리적 사용
+
+- 과도한 API 호출 자제
+- 개인정보 보호
+- 공정한 정보 공유
+- 시장 조작 금지
+
+---
+
+**마지막 업데이트**: 2025년 10월 11일  
+**작성자**: n8n Community  
+**버전**: 1.0  
+**워크플로우 ID**: 947u9tbkDRhqKWPQ

@@ -1,0 +1,592 @@
+## n8n과 OCR로 영수증 자동 처리 시스템 만들기
+
+### n8n을 활용하여 영수증 이미지를 자동으로 인식하고 데이터를 추출하여 Google Sheet와 Notion에 자동으로 기록하는 시스템 구축 가이드입니다. <br> 영수증 사진만 업로드하면 모든 정보가 자동으로 정리됩니다.
+
+## 목차
+
+- [시스템 개요](#시스템-개요)
+- [사전 준비사항](#사전-준비사항)
+- [API 설정](#api-설정)
+- [n8n 워크플로우 구축](#n8n-워크플로우-구축)
+- [고급 활용 팁](#고급-활용-팁)
+- [문제 해결](#문제-해결)
+
+## 시스템 개요
+
+이 가이드에서는 영수증 이미지를 업로드하면 자동으로 OCR 처리하여 구조화된 데이터로 변환하고, Google Sheet와 Notion에 자동 기록하는 시스템을 구축합니다.
+
+### 워크플로우 구조
+
+> &nbsp;&nbsp;&nbsp; **1. 업로드 파일 접수** → **2. 파일 분석 및 추출** → **3. 데이터 구조화 및 환율 계산** → **4. 데이터 저장**
+
+![워크플로우 구조](./n8n_Source/02/02.%20WF.png)
+
+1. **업로드 파일 접수 (웹사이트 → n8n 웹훅)**:
+   - Webhook (파일 수신)
+   - Respond to Webhook (응답 반환)
+
+2. **파일 분석 및 추출**:
+   - Extract from File (PDF OCR 처리)
+   - Upload file (Google Drive 저장)
+   - Merge (데이터 병합)
+
+3. **데이터 구조화 및 환율 계산**:
+   - AI Agent (데이터 파싱 및 구조화)
+   - OpenAI Chat Model (GPT-5)
+   - Google Gemini (이미지 분석)
+   - Calculator (환율 계산)
+   - Structured Output Parser (JSON 출력)
+
+4. **데이터터 재정의 및 저장**:
+   - Edit Fields (필드 재구성)
+   - Append row in sheet (Google Sheet 등록)
+   - Create a database page (Notion DB 업데이트)
+   - Kakao Talk (카카오톡 발송)
+
+### 주요 기능
+
+- 영수증 이미지/PDF 자동 OCR 처리
+- AI 기반 자동 데이터 추출 및 구조화
+- 실시간 환율 적용 (USD → KRW)
+- Google Sheet 자동 기록
+- Notion 데이터베이스 자동 업데이트
+- 카카오톡 처리 완료 알림
+
+## 사전 준비사항
+
+- n8n 설치 및 실행 (Cloud 또는 Self-hosted)
+- Google 계정 (Google Drive, Google Sheets)
+- Notion 계정 및 데이터베이스
+- OpenAI API 키 (GPT-5 모델 사용)
+- Google Gemini API 키
+- 카카오 디벨로퍼스 계정 (알림용)
+
+## API 설정
+
+### 1. Google Drive & Sheets API 설정
+
+1. [Google Cloud Console](https://console.cloud.google.com/)에 접속합니다.
+
+2. **프로젝트 생성 및 API 활성화**:
+   - Google Drive API 활성화
+   - Google Sheets API 활성화
+   - OAuth 2.0 클라이언트 ID 생성
+
+3. **n8n에서 인증**:
+   - Google Drive 계정 연결
+   - Google Sheets 계정 연결
+
+### 2. Notion API 설정
+
+1. [Notion Developers](https://www.notion.so/my-integrations)에 접속합니다.
+
+2. **Integration 생성**:
+   - 새 Integration 만들기
+   - Integration Token 복사
+
+3. **데이터베이스 연결**:
+   - Notion 페이지에서 데이터베이스 생성
+   - Integration에 데이터베이스 접근 권한 부여
+
+### 3. OpenAI API 설정
+
+1. [OpenAI Platform](https://platform.openai.com/)에서 API 키 발급
+
+2. **n8n에서 설정**:
+   - OpenAI API Credentials 추가
+   - GPT-5 모델 선택
+
+### 4. Google Gemini API 설정
+
+1. [Google AI Studio](https://aistudio.google.com/)에서 API 키 발급
+
+2. **n8n에서 설정**:
+   - Google Gemini API Credentials 추가
+   - gemini-2.5-flash 모델 선택
+
+## n8n 워크플로우 구축
+
+### 1. 웹훅 설정 (파일 접수)
+
+**Webhook 노드 추가**
+
+- **HTTP Method**: POST
+- **Path**: 917ee917-532c-441f-814e-38d34497abc8 (자동 생성)
+- **Response Mode**: Response Node
+- **Webhook ID**: 자동 생성됨
+
+**Respond to Webhook 노드 추가**
+
+- **Respond With**: Binary
+- **Response Code**: 200
+- **Response Headers**:
+  - Name: Access-Control-Allow-Origin
+  - Value: *
+
+### 2. 파일 분석 및 저장
+
+#### (1) Extract from File 노드
+
+**Extract from File 노드 추가**
+
+- **Operation**: PDF
+- **Binary Property Name**: DATA
+- **기능**: PDF/이미지에서 텍스트 추출 (OCR)
+
+#### (2) Upload file 노드 (Google Drive)
+
+**Google Drive 노드 추가**
+
+- **Operation**: Upload
+- **Input Data Field Name**: DATA
+- **Drive**: My Drive
+- **Folder ID**: 16vEnNiGB8vd2m1k5N5AmXGBdz3gHknxJ (receipt_upload 폴더)
+- **Credentials**: Google Drive OAuth2 인증 정보
+
+#### (3) Merge 노드
+
+**Merge 노드 추가**
+
+- **Mode**: Combine
+- **Combine By**: Combine by Position
+- **기능**: OCR 텍스트와 Drive 업로드 정보 병합
+
+### 3. AI Agent 설정 (데이터 구조화)
+
+**AI Agent 노드 추가**
+
+**기본 설정**:
+- Prompt Type: Define
+- Text: `={{ $json.text }}`
+- Has Output Parser: true
+- Model: OpenAI Chat Model 연결
+- Tools: Calculator, Google Gemini 연결
+- Output Parser: Structured Output Parser 연결
+
+**System Message** (한국어):
+
+```
+# 역할
+당신은 영수증 데이터를 분석하고 구조화하는 전문 AI 어시스턴트입니다.
+
+# 작업 목표
+OCR로 추출된 영수증 정보를 파싱하여 Google Sheet와 Notion DB에 입력 가능한 구조화된 데이터로 변환합니다.
+
+# 데이터 추출 규칙
+
+## 1. 날짜 (date)
+- 형식: YYYY-MM-DD
+- 영수증에서 거래일자/발행일자를 찾아 변환
+- 날짜를 찾을 수 없는 경우: 오늘 날짜 사용
+- 예시: "2025-10-05"
+
+## 2. 제품명/서비스명 (product_service)
+- 영수증에 표시된 품목명 또는 서비스명을 정확히 기재
+- 여러 품목이 있는 경우: 각각 별도 행으로 분리
+- 불필요한 코드나 번호는 제거
+- 예시: "Claude Pro 구독료", "아메리카노", "노트북 파우치"
+
+## 3. 구매처 (source)
+- 회사명/상호명만 추출 (지점명, 주소 제외)
+- 영문과 한글이 같이 있으면 한글 우선
+- 예시: "Anthropic", "스타벅스", "쿠팡"
+
+## 4. 비용 (cost_usd)
+- 형식: 숫자만 (달러 기호, 통화 단위 제외)
+- 소수점 둘째 자리까지 표시
+- 예시: 20.00, 4.50, 129.99
+
+## 5. 비용 (cost_krw)
+- 형식: 숫자만 (원화 기호, 쉼표 제외)
+- 정수로 표시 (소수점 반올림)
+- **환율 적용 방법:**
+  * 영수증의 date를 기준으로 해당 날짜의 실제 USD/KRW 환율 조회
+  * web_search 또는 사용 가능한 도구를 활용하여 환율 정보 검색
+  * 환율 정보를 찾을 수 없는 경우: 1 USD = 1,350 KRW 기본값 사용
+  * 계산식: cost_usd × 환율 = cost_krw (반올림)
+- 예시: 26300, 6075, 175365
+
+# 출력 형식
+
+반드시 아래의 JSON 배열 형식으로만 출력하세요.
+```json
+[
+    {
+        "등록일": "YYYY-MM-DD",
+        "제품/서비스": "제품/서비스명",
+        "구입처": "구매처",
+        "비용(달러)": 0.00,
+        "비용(원화)": 0
+    }
+]
+```
+```
+
+### 4. AI 모델 및 도구 설정
+
+#### (1) OpenAI Chat Model
+
+**OpenAI Chat Model 노드 추가**
+
+- **Model**: gpt-5
+- **Credentials**: OpenAI API 키 설정
+- **Connection**: AI Agent의 Language Model 입력에 연결
+
+#### (2) Google Gemini
+
+**Message a model in Google Gemini 노드 추가**
+
+- **Model**: models/gemini-2.5-flash
+- **Messages**: `{{ $fromAI('values0_Prompt', '', 'string') }}`
+- **Credentials**: Google Gemini API 키 설정
+- **Connection**: AI Agent의 Tool 입력에 연결
+- **기능**: 이미지 분석 및 텍스트 추출
+
+#### (3) Calculator
+
+**Calculator 노드 추가**
+
+- **Connection**: AI Agent의 Tool 입력에 연결
+- **기능**: 환율 계산 등 수학 연산
+
+#### (4) Structured Output Parser
+
+**Structured Output Parser 노드 추가**
+
+- **JSON Schema Example**:
+```json
+{
+  "date": "2025-10-05",
+  "product/Service": "Claude Pro 구독료",
+  "source": "Anthropic",
+  "cost_usd": "USD $20",
+  "cost_krw": "26,300원"
+}
+```
+- **Connection**: AI Agent의 Output Parser 입력에 연결
+
+### 5. 데이터 재구성
+
+**Edit Fields 노드 추가**
+
+**Assignments**:
+- 등록일: `={{ $json.output.date }}`
+- 제품/서비스: `={{ $json.output['product/Service'] }}`
+- 구입처: `={{ $json.output.source }}`
+- 비용(달러): `={{ $json.output.cost_usd }}`
+- 비용(원화): `={{ $json.output.cost_krw }}`
+
+### 6. 데이터 저장
+
+#### (1) Google Sheets 저장
+
+**Append row in sheet 노드 추가**
+
+- **Operation**: Append
+- **Document ID**: 1Up6Al9SSg6h17mtClBfqxO-kK2hnFYbE7Wl29XbzxWE (영수증 정리)
+- **Sheet Name**: 시트1
+- **Columns Mapping**:
+  - 업로드 날짜: `={{ $today.format('yyyy-MM-dd') }}`
+  - 제품/서비스: `={{ $json['제품/서비스'] }}`
+  - 결제일: `={{ $json['등록일'] }}`
+  - 구입처: `={{ $json['구입처'] }}`
+  - 비용(달러): `={{ $json['비용(달러)'] }}`
+  - 비용(원화): `={{ $json['비용(원화)'] }}`
+  - 영수증 원본: `={{ $('Merge').item.json.webContentLink }}`
+
+#### (2) Notion DB 저장
+
+**Create a database page 노드 추가**
+
+- **Resource**: Database Page
+- **Database ID**: 283ec1a6-959a-8089-8820-f361914815da (영수증)
+- **Title**: 영수증
+- **Properties**:
+  - 제품/서비스 (title): `={{ $json['제품/서비스'] }}`
+  - 구입처 (rich_text): `={{ $json['구입처'] }}`
+  - 비용 (달러) (number): `={{ $json['비용(달러)']*1 }}`
+  - 비용 (원화) (number): `={{ $json['비용(원화)']*1 }}`
+  - 영수증 URL (url): `={{ $json['영수증 원본'] }}`
+  - 등록일 (date): `={{ $today.format('yyyy-MM-dd') }}`
+  - 결제일 (date): `={{ $json['결제일'] }}`
+
+#### (3) 카카오톡 알림
+
+**Kakao Talk1 노드 추가**
+
+- **Method**: POST
+- **URL**: `https://kapi.kakao.com/v2/api/talk/memo/default/send`
+- **Authentication**: OAuth2 API
+- **Headers**:
+  - Content-Type: application/x-www-form-urlencoded;charset=utf-8
+- **Body Parameters**:
+  - template_object:
+```
+{
+  "object_type": "text",
+  "text": "{{ '텍스트를 보냅니다 ' + $now.toFormat('yyyy-MM-dd,HH:mm:ss') }}",
+  "link": {
+    "web_url": "https://developers.kakao.com",
+    "mobile_web_url": "https://developers.kakao.com"
+  },
+  "button_title": "바로 확인"
+}
+```
+
+### 7. 노드 연결
+
+**연결 구조**:
+
+1. **Webhook** → **Respond to Webhook**
+2. **Respond to Webhook** → **Extract from File** + **Upload file**
+3. **Extract from File** → **Merge** (Input 1)
+4. **Upload file** → **Merge** (Input 2)
+5. **Merge** → **AI Agent**
+6. **OpenAI Chat Model** → **AI Agent** (ai_languageModel)
+7. **Google Gemini** → **AI Agent** (ai_tool)
+8. **Calculator** → **AI Agent** (ai_tool)
+9. **Structured Output Parser** → **AI Agent** (ai_outputParser)
+10. **AI Agent** → **Edit Fields**
+11. **Edit Fields** → **Append row in sheet**
+12. **Append row in sheet** → **Create a database page**
+13. **Create a database page** → **Kakao Talk1**
+
+## 고급 활용 팁
+
+### 1. 다양한 파일 형식 지원
+
+Extract from File 노드는 다음 형식을 지원합니다:
+- PDF
+- 이미지 (JPG, PNG)
+- 스캔 문서
+
+### 2. 환율 API 연동
+
+더 정확한 환율 적용을 위해 환율 API를 연동할 수 있습니다:
+- exchangerate-api.com
+- fixer.io
+- 한국수출입은행 환율 API
+
+### 3. 영수증 자동 분류
+
+AI Agent의 System Message를 수정하여 자동 분류 기능 추가:
+- 카테고리 자동 분류 (식비, 교통비, 사무용품 등)
+- 태그 자동 생성
+- 비용 센터 자동 할당
+
+### 4. 일괄 처리
+
+여러 영수증을 동시에 처리하려면:
+- Webhook에서 파일 배열 수신
+- Loop 노드로 순차 처리
+- 배치 처리 결과 요약 알림
+
+### 5. 승인 워크플로우
+
+비용 승인 프로세스 추가:
+- 일정 금액 이상은 승인 요청
+- Slack/이메일로 승인자에게 알림
+- 승인 후 최종 기록
+
+## 문제 해결
+
+### 자주 발생하는 문제들
+
+#### 1. OCR 인식 오류
+
+**증상**: 텍스트가 정확히 추출되지 않음
+
+**해결 방법**:
+- 영수증 이미지 해상도 확인 (최소 300 DPI 권장)
+- 이미지가 선명한지 확인
+- Google Gemini를 추가로 활용하여 이미지 직접 분석
+- 한글/영문 혼용 시 Google Gemini 사용 권장
+
+#### 2. 데이터 파싱 실패
+
+**증상**: AI Agent가 데이터를 올바르게 추출하지 못함
+
+**해결 방법**:
+- System Message의 예시를 더 추가
+- Structured Output Parser의 스키마 확인
+- 영수증 형식이 일반적인지 확인
+
+#### 3. 환율 계산 오류
+
+**증상**: 원화 금액이 정확하지 않음
+
+**해결 방법**:
+- Calculator 도구가 올바르게 연결되었는지 확인
+- 환율 조회 기능 확인
+- 기본값 (1,350원) 사용 여부 확인
+
+#### 4. Google Sheet 업로드 실패
+
+**증상**: 데이터가 시트에 기록되지 않음
+
+**해결 방법**:
+- Google Sheets API 권한 확인
+- 시트 ID와 시트명 확인
+- 컬럼 매핑이 올바른지 확인
+
+#### 5. Notion DB 업데이트 실패
+
+**증상**: Notion 페이지가 생성되지 않음
+
+**해결 방법**:
+- Notion Integration 권한 확인
+- Database ID 확인
+- 필드 타입 매칭 확인 (number, date, text 등)
+
+### 디버깅 팁
+
+1. **단계별 테스트**:
+   - 먼저 간단한 영수증으로 테스트
+   - 각 노드의 출력 확인
+   - 데이터 흐름 추적
+
+2. **로그 확인**:
+   - n8n 실행 로그 확인
+   - 오류 메시지 분석
+   - API 응답 확인
+
+3. **데이터 검증**:
+   - Edit Fields에서 데이터 변환 확인
+   - JSON 형식 검증
+   - 필드명 일치 확인
+
+## 실제 사용 예시
+
+### 영수증 업로드부터 저장까지
+
+1. **웹사이트에서 영수증 업로드**:
+   - 사용자가 영수증 사진을 업로드
+   - Webhook으로 파일 전송
+
+2. **자동 처리**:
+```
+📄 영수증 수신
+  ↓
+🔍 OCR 처리 (Extract from File)
+  ↓
+☁️ Google Drive 저장 (Upload file)
+  ↓
+🤖 AI 분석 (AI Agent + GPT-5 + Gemini)
+  - 제품: Claude Pro 구독료
+  - 구입처: Anthropic
+  - 금액: $20.00
+  - 환율: 1,315 KRW/USD
+  - 원화: 26,300원
+  ↓
+✏️ 데이터 재구성 (Edit Fields)
+  ↓
+📊 Google Sheet 기록 (Append row)
+  ↓
+📓 Notion DB 기록 (Create page)
+  ↓
+💬 카카오톡 알림 발송
+```
+
+3. **결과 확인**:
+   - Google Sheet에서 데이터 확인
+   - Notion에서 페이지 확인
+   - 카카오톡으로 처리 완료 알림 수신
+
+### 처리 결과 예시
+
+**Google Sheet 기록**:
+
+| 업로드 날짜 | 제품/서비스 | 결제일 | 구입처 | 비용(달러) | 비용(원화) | 영수증 원본 |
+|------------|------------|--------|--------|-----------|-----------|------------|
+| 2025-10-10 | Claude Pro 구독료 | 2025-10-05 | Anthropic | 20.00 | 26300 | [링크] |
+
+**Notion DB 페이지**:
+- 제목: Claude Pro 구독료
+- 구입처: Anthropic
+- 비용 (달러): 20.00
+- 비용 (원화): 26,300
+- 등록일: 2025-10-10
+- 결제일: 2025-10-05
+- 영수증 URL: [Google Drive 링크]
+
+## 확장 아이디어
+
+### 1. 모바일 앱 연동
+- 스마트폰에서 바로 영수증 촬영 및 업로드
+- 실시간 처리 및 알림
+
+### 2. 이메일 연동
+- 이메일로 받은 전자 영수증 자동 처리
+- Gmail 첨부파일 자동 추출
+
+### 3. 통계 및 리포트
+- 월간/연간 지출 통계
+- 카테고리별 지출 분석
+- 대시보드 자동 생성
+
+### 4. 회계 시스템 연동
+- ERP 시스템 자동 업데이트
+- 경비 처리 자동화
+- 세금 신고 자료 생성
+
+### 5. 영수증 보관함
+- 디지털 영수증 아카이브
+- 검색 및 필터 기능
+- 영구 보관 솔루션
+
+## 보안 고려사항
+
+### 1. 파일 보안
+- HTTPS로 파일 전송
+- 업로드된 파일 암호화
+- 접근 권한 제한
+
+### 2. API 키 관리
+- n8n Credentials 기능 활용
+- 환경 변수로 키 관리
+- 정기적인 키 갱신
+
+### 3. 데이터 보호
+- 민감한 정보 마스킹
+- 개인정보 처리 방침 준수
+- 데이터 보관 기간 설정
+
+### 4. 접근 제어
+- Webhook URL 보안
+- 인증 토큰 사용
+- IP 화이트리스트 설정
+
+## 성능 최적화
+
+### 1. 처리 속도 개선
+- 병렬 처리 활용
+- 불필요한 노드 제거
+- 캐싱 활용
+
+### 2. 비용 절감
+- API 호출 최소화
+- 적절한 모델 선택 (Gemini vs GPT)
+- 배치 처리로 효율성 향상
+
+### 3. 안정성 향상
+- 에러 핸들링 강화
+- 재시도 로직 추가
+- 타임아웃 설정
+
+## 결론
+
+> 영수증 OCR 자동 처리 시스템은 수작업으로 하던 영수증 기록을 완전히 자동화합니다. 사진만 찍으면 모든 정보가 자동으로 정리되어 Google Sheet와 Notion에 저장되므로, 경비 처리와 장부 기록이 훨씬 편리해집니다.
+>
+> 이 시스템은 개인 용도뿐만 아니라 팀이나 회사에서도 활용할 수 있으며, 경비 처리 프로세스를 크게 개선할 수 있으며, AI와 OCR 기술의 발전으로 인식 정확도가 계속 향상되고 있어, 더욱 신뢰할 수 있는 자동화가 가능합니다.
+> 
+> 기본 워크플로우를 바탕으로 자신의 필요에 맞게 커스터마이징하고, 승인 워크플로우나 통계 기능 등을 추가하여 더욱 강력한 시스템으로 발전시켜보세요.
+
+## 참고 자료
+
+- [n8n 공식 문서](https://docs.n8n.io/)
+- [Google Drive API 문서](https://developers.google.com/drive/api)
+- [Google Sheets API 문서](https://developers.google.com/sheets/api)
+- [Notion API 문서](https://developers.notion.com/)
+- [OpenAI API 문서](https://platform.openai.com/docs)
+- [Google Gemini API 문서](https://ai.google.dev/docs)
+- [카카오 디벨로퍼스](https://developers.kakao.com/)

@@ -1,0 +1,355 @@
+### n8n과 Perplexity API를 활용하여 매주 최신 AI 제품/서비스 출시 소식을 자동으로 리서치하고 Slack으로 전송하는 시스템 구축 가이드입니다. <br> AI 에이전트가 스스로 뉴스를 수집하고 분석하여 체계적인 브리핑을 생성합니다.
+
+## 목차
+
+- [시스템 개요](#시스템-개요)
+- [사전 준비사항](#사전-준비사항)
+- [n8n 워크플로우 구축](#n8n-워크플로우-구축)
+- [고급 활용 팁](#고급-활용-팁)
+- [문제 해결](#문제-해결)
+- [결론](#결론)
+
+## 시스템 개요
+
+이 가이드에서는 매주 월요일 아침 AI 업계 제품 출시 소식을 자동으로 리서치하여 Slack으로 받아볼 수 있는 시스템을 구축합니다.
+
+### 워크플로우 구조
+
+> &nbsp;&nbsp;&nbsp; 1. **스케줄 트리거** → 2. **AI Agent 리서치** → 3. **Slack 포맷 변환** → 4. **Slack 메시지 전송**
+
+![워크플로우 구조](./n8n_Source/08/2.%20WF.png)
+
+<br>
+
+### 주요 기능
+
+- 매주 월요일 오전 7시 자동 실행
+- Perplexity API를 활용한 최신 AI 뉴스 8-10건 수집
+- GPT-4.1-mini 기반 AI Agent가 자동 분석 및 요약
+- Impact 분석(High/Medium/Low) 및 카테고리 분류
+- Slack Block Kit 포맷으로 시각적 전달
+- 신뢰할 수 있는 출처(TechCrunch, Wired, The Verge) 중심
+
+## 사전 준비사항
+
+- n8n 설치 및 실행
+- OpenAI API 키 (GPT-4.1-mini 사용)
+- Perplexity API 키
+- Slack 워크스페이스 및 OAuth 앱 설정
+
+## n8n 워크플로우 구축
+
+### 1. 스케줄 트리거 설정
+
+1. **Schedule Trigger 노드 추가**
+2. **실행 시간 설정**:
+   - Trigger Interval: Every Week
+   - Trigger at Day: Monday (1)
+   - Trigger at Hour: 7 (오전 7시)
+
+### 2. AI Agent 리서치 설정
+
+이 워크플로우의 핵심은 AI Agent 노드입니다. Agent는 자율적으로 Perplexity를 활용하여 정보를 수집하고 분석합니다.
+
+#### AI Agent 노드 구성
+
+1. **AI Agent 노드 추가**
+2. **Prompt Type**: Define
+3. **사용자 프롬프트**:
+   ```
+   최근 한 주간 AI 서비스 출시 소식을 리서치해줘
+   ```
+
+#### System Message (AI Agent 지침)
+
+```
+You are a meticulous **AI Product-Launch Research Agent**.  
+Your only external capability is the **"Research" tool**, which returns excerpts + URLs.
+
+TASK  
+1. Detect the **8–10 most consequential AI product / feature launches or upgrades** announced in the last **7 days**.  
+• Today is {{ $today.format('yyyy-MM-dd') }}  
+
+2. For each launch, explain **why it matters** to the AI ecosystem, focusing on practical impact (productivity boost, new capability, market share shift, regulatory signal, hardware acceleration).
+
+────────────────────────────────────────
+INFORMATION-GATHERING RULES  
+• **Make exactly ONE (1) Research call.**  
+• Build a concise query that blends generic AI terms with launch triggers, e.g.:
+
+  `"AI product launch" OR "new AI feature" OR "open-source LLM release" OR "AI Agent"`
+  AND `("past week" OR "지난 7일")`
+
+• Set recency ≤ 7 days.  
+• Pull **more than 10 distinct reputable sources** (tier-1 tech media, company blogs, regulator posts, peer-review).  
+• Ignore paywalled or duplicate links.
+
+────────────────────────────────────────
+ANALYSIS & SYNTHESIS RULES  
+• Cross-check facts; flag discrepancies.  
+• For each launch, tag:  
+  – **Impact area:** Model / Service∙Product / Productivity / Business / Regulation / Hardware  
+  – **Impact strength:** High / Medium / Low  
+• Rank stories by expected market influence (High first).  
+• Emphasise *what's new* and *tangible benefit*.
+
+────────────────────────────────────────
+OUTPUT **JSON** — EXACT SHAPE REQUIRED  
+Return **only** the following JSON object:
+
+{
+  "headline": "<HEADLINE>",
+  "research": "<MARKDOWN_BODY>",
+  "sources": "<NUMBERED_SOURCE_LIST>"
+}
+
+<HEADLINE>
+이번 주 AI 제품·기능 출시 흐름을 한 문장으로 요약 (한국어).
+
+<MARKDOWN_BODY> (한국어, Markdown)
+
+# 이번 주 AI 제품·기능 출시 브리핑  
+_Last updated: <YYYY-MM-DD>_
+
+## 핵심 한줄 요약  
+<HEADLINE>
+
+## 주요 출시·업데이트 8–10건
+- **제품/기능:** <제목>  
+  • **발행일:** <YYYY-MM-DD>  
+  • **Impact area:** Model / Service·Product / Productivity / Business / Regulation / Hardware  
+  • **Impact strength:** High / Medium / Low  
+  • **근거:** (see #n)  
+  • **요약:** 1–2문장 — 무엇이 새롭고 왜 중요한가?
+
+- … (반복)
+
+## 전체 시장 파장  
+- **기술 트렌드:** …  
+- **산업·규제 동향:** …  
+
+<NUMBERED_SOURCE_LIST>
+1. [기사·블로그 제목] – URL
+2. …
+
+모든 주장에는 (see #n) 인라인 인용.
+
+────────────────────────────────────────
+STYLE GUIDE (한국어)
+• 1 000–1 500 단어 내외, 군더더기 없이.
+• 기술용어(LLM, GPU, RLHF 등)는 원어 그대로 유지.
+• 숫자·인용 임의 생성 금지; 불확실하면 "n/a".
+```
+
+#### OpenAI Chat Model 설정
+
+1. **OpenAI Chat Model 노드 추가**
+2. **Model**: gpt-4.1-mini 선택
+3. AI Agent 노드의 Chat Model 입력에 연결
+
+#### Simple Memory 설정
+
+1. **Memory Buffer Window 노드 추가**
+2. **Session ID Type**: Custom Key
+3. **Session Key**: `scheduled_research_session`
+4. AI Agent 노드의 Memory 입력에 연결
+
+#### Perplexity Search Tool 설정
+
+1. **Perplexity Tool 노드 추가**
+2. **Search Domain Filter**: `wired.com, techcrunch.com, theverge.com`
+3. **Search Recency**: week (최근 1주일)
+4. AI Agent 노드의 Tool 입력에 연결
+
+### 3. Slack 포맷 변환
+
+AI Agent가 생성한 마크다운 리서치 결과를 Slack Block Kit 형식으로 변환합니다.
+
+1. **Message a Model 노드 추가** (Slack Formatter)
+2. **Model**: GPT-4.1 선택
+
+#### System Message (Slack Block Kit 포맷터 지침)
+
+```
+당신은 Slack 메시지를 생성하는 **전문 Block Kit 포맷터**입니다.
+
+입력 형태  
+{
+  "headline": "<HEADLINE>",
+  "research": "<MARKDOWN_BODY>",   // AI 뉴스 N개가 Markdown-불릿 형식으로 정리돼 있음
+  "sources": "<NUMBERED_SOURCE_LIST>"
+}
+
+출력 규칙  
+1. **반드시** Slack Block Kit JSON **단일 객체**만 반환하세요.  
+   - 최상위 키는 `blocks` 배열 하나뿐이어야 합니다.  
+2. 헤더 + Divider + 뉴스 섹션들 + 마지막 Divider + "출처" 섹션 순으로 구성합니다.  
+3. 뉴스 섹션 파싱 방법  
+   • `research` 안의 각 *이슈* 블록(`- **이슈:** …`)을 하나의 `section` 블록으로 변환  
+   • 텍스트 구성:  
+     *<제목>*  
+     🗓️ <발행일> ｜ 🏷️ <Impact area>, <Impact strength>  
+     <요약 문장>  
+     🔗 <첫 번째 관련 URL>
+     
+4. 제목은 굵게(`*…*`), 날짜는 `YYYY-MM-DD` 형식, 태그는 쉼표 구분.  
+5. 첫 블록은 반드시 `header` 타입:  
+   "📢 이번 주 AI 테크뉴스 (YYYY-MM-DD)" — 날짜는 오늘 날짜로.  
+6. **추가 텍스트·주석 금지** — JSON 외 어떠한 문자열도 출력하지 마세요.  
+7. 입력에 없는 정보(링크·날짜 등)는 생성하지 마세요. 불명확하면 해당 줄을 생략하거나 `n/a`.
+
+※ 예시 구조  
+{
+  "blocks": [
+    { "type": "header", … },
+    { "type": "divider" },
+    { "type": "section", … },
+    …
+    { "type": "divider" },
+    { "type": "section", "text": { "type":"mrkdwn", "text":"*Sources*\n1. …"} }
+  ]
+}
+```
+
+#### User Message
+
+```
+다음 JSON 객체는 AI 뉴스 리서치 결과입니다.  
+`headline`, `research`, `sources` 세 필드만 포함되어 있습니다:
+
+{{ $json.output }}
+
+이 데이터를 바탕으로 Slack Block Kit 메시지를 만들어 주세요.
+
+예시 출력
+{
+"blocks": [
+{
+"type": "header",
+"text": { "type": "plain_text", "text": "📢 이번 주 AI 테크뉴스 (2025-07-08)", "emoji": true }
+},
+{ "type": "divider" },
+{
+"type": "section",
+"text": {
+"type": "mrkdwn",
+"text": "🧠 GPT-4.1 모델 시리즈 발표\n🗓️ 2025-07-06 ｜ 🏷️ AI, OpenAI, 모델업데이트\n오픈AI가 GPT-4.1을 공개했습니다. 성능·보안이 대폭 개선되었으며, Azure Foundry에서 우선 제공될 예정입니다.\n🔗 https://example.com/news/openai-gpt41"
+}
+},
+{ "type": "divider" },
+{
+"type": "section",
+"text": {
+"type": "mrkdwn",
+"text": "Sources\n1. [기사제목] – https://example.com/1\n2. [블로그] – https://example.com/2"
+}
+}
+]
+}
+```
+
+### 4. Slack 메시지 전송
+
+1. **Slack 노드 추가**
+2. **Authentication**: OAuth2 선택
+3. **Channel**: 원하는 채널 선택 (예: ai-service-research)
+4. **Message Type**: Block
+5. **Blocks**: `={{ $json.message.content }}`
+
+#### Slack OAuth2 설정
+
+Slack 앱을 생성하고 OAuth 권한을 설정해야 합니다:
+
+1. [Slack API](https://api.slack.com/apps)에서 새 앱 생성
+2. OAuth & Permissions에서 다음 스코프 추가:
+   - `chat:write`
+   - `channels:read`
+3. Redirect URL 추가: `https://your-n8n-domain/rest/oauth2-credential/callback`
+4. 워크스페이스에 앱 설치
+5. n8n에서 Slack OAuth2 Credential 생성하여 연결
+
+## 고급 활용 팁
+
+### 리서치 도메인 커스터마이징
+
+Perplexity Tool의 `searchDomainFilter`를 수정하여 원하는 뉴스 소스를 추가할 수 있습니다:
+
+```
+wired.com, techcrunch.com, theverge.com, venturebeat.com, arstechnica.com
+```
+
+### 리서치 주기 변경
+
+Schedule Trigger에서 실행 주기를 변경할 수 있습니다:
+
+- **매일 실행**: Trigger Interval을 "Every Day"로 변경
+- **격주 실행**: Cron 표현식 사용 (`0 7 * * 1/2`)
+
+### Impact 분석 기준 조정
+
+System Message의 Impact area와 strength 기준을 프로젝트에 맞게 수정할 수 있습니다:
+
+```
+Impact area: Enterprise / Consumer / Developer / Research / Infrastructure
+Impact strength: Critical / Major / Minor
+```
+
+### 다중 채널 발송
+
+여러 Slack 채널에 동시 발송하려면:
+
+1. Slack 노드를 복사하여 추가
+2. 각 노드에서 다른 채널 선택
+3. Message a Model 노드의 출력을 모든 Slack 노드에 연결
+
+## 문제 해결
+
+### 자주 발생하는 문제들
+
+1. **Perplexity API 오류**:
+   - API 키가 유효한지 확인
+   - 요청 한도를 초과하지 않았는지 확인
+   - Domain Filter가 너무 제한적이지 않은지 확인
+
+2. **AI Agent가 JSON 형식을 반환하지 않음**:
+   - System Message의 출력 형식 지침이 명확한지 확인
+   - GPT-4.1-mini 모델이 올바르게 선택되었는지 확인
+   - Temperature 설정을 0.3 이하로 낮춰 일관성 향상
+
+3. **Slack 메시지 전송 실패**:
+   - OAuth2 인증이 올바르게 설정되었는지 확인
+   - 앱이 해당 채널에 초대되었는지 확인
+   - Block Kit JSON 형식이 올바른지 Slack Block Kit Builder로 검증
+
+4. **빈 리서치 결과**:
+   - 검색 기간(Search Recency)을 늘려보기
+   - Domain Filter를 제거하거나 확대
+   - Perplexity 검색 쿼리를 더 광범위하게 수정
+
+### 디버깅 팁
+
+1. **중간 결과 확인**: 각 노드의 출력을 확인하여 어느 단계에서 문제가 발생하는지 파악
+2. **JSON 검증**: AI Agent 출력을 JSON validator로 검증
+3. **로그 활성화**: n8n 실행 로그에서 상세한 오류 메시지 확인
+
+## 결론
+
+> n8n과 Perplexity API를 활용하면 AI 에이전트가 자율적으로 최신 AI 뉴스를 리서치하고 분석하여 Slack으로 전달하는 완전 자동화 시스템을 구축할 수 있습니다. 
+> 
+> 이 워크플로우의 핵심 장점:
+> 
+> - **자율적 리서치**: AI Agent가 스스로 정보를 수집하고 분석
+> - **신뢰할 수 있는 출처**: 검증된 테크 미디어만 활용
+> - **체계적 분석**: Impact 분석 및 카테고리 분류로 핵심 파악
+> - **시각적 전달**: Slack Block Kit으로 가독성 높은 브리핑
+> - **완전 자동화**: 설정 후 별도 관리 불필요
+> 
+> 오늘 소개한 AI 뉴스 리서치뿐만 아니라, 경쟁사 모니터링, 산업 동향 분석, 기술 트렌드 추적 등 다양한 리서치 업무에 응용할 수 있습니다.
+
+## 참고 자료
+
+- [n8n 공식 문서](https://docs.n8n.io/)
+- [Perplexity API 문서](https://docs.perplexity.ai/)
+- [OpenAI API 문서](https://platform.openai.com/docs)
+- [Slack Block Kit Builder](https://app.slack.com/block-kit-builder)
+- [Slack API 문서](https://api.slack.com/)

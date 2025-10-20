@@ -1,0 +1,663 @@
+
+### n8n의 AI Agent, Supabase Vector Store, Cohere Reranker를 활용하여 회사 문서를 기반으로 자동 답변하는 <br> 고급 RAG(Retrieval-Augmented Generation) 챗봇 시스템 구축 가이드입니다.
+
+## 목차
+
+- [시스템 개요](#시스템-개요)
+- [사전 준비사항](#사전-준비사항)
+- [1단계: 문서 벡터화 시스템 구축](#1단계-문서-벡터화-시스템-구축)
+- [2단계: AI RAG Agent 챗봇 구축](#2단계-ai-rag-agent-챗봇-구축)
+- [고급 활용 팁](#고급-활용-팁)
+- [문제 해결](#문제-해결)
+- [결론](#결론)
+
+## 시스템 개요
+
+이 가이드에서는 **동반성장위원회의 평가 안내 문서**를 기반으로 정보서비스업 관련 질문에 자동으로 답변하는 AI 챗봇을 구축합니다.
+
+### 시스템 구조
+
+![워크플로우 구조](./n8n_Source/03-01/2.%20WF.png)
+
+**2단계 파이프라인**:
+1. **문서 벡터화**: Google Drive → 벡터 DB 저장
+2. **AI 챗봇**: 질문 → 벡터 검색 → Reranking → AI 답변
+
+### 주요 기능
+
+- Google Drive 폴더 실시간 모니터링
+- 자동 문서 벡터화 및 Supabase 저장
+- Cohere Reranker로 검색 품질 향상
+- GPT-4o 기반 정확한 답변 생성
+- Postgres 기반 대화 기억 기능
+- 정보서비스업에 특화된 답변
+
+## 사전 준비사항
+
+### 필수 서비스
+
+- **n8n**: Self-hosted 또는 Cloud
+- **Google Drive**: 문서 저장소
+- **Supabase**: Vector Database (무료 tier 가능)
+- **OpenAI API**: GPT-4o 및 임베딩 모델
+- **Cohere API**: Reranker 모델
+- **PostgreSQL**: 대화 기록 저장 (Supabase 내장 PostgreSQL 사용 가능)
+
+### API 키 준비
+
+1. **OpenAI API** 키
+2. **Cohere API** 키 (무료 tier 사용 가능)
+3. **Supabase** Project URL 및 Anon Key
+4. **Google Drive** OAuth2 인증
+
+## 1단계: 문서 벡터화 시스템 구축
+
+### 1.1 Google Drive Trigger 설정
+
+1. **Google Drive Trigger 노드 추가**
+2. **설정**:
+   - Poll Times: Every Minute
+   - Trigger On: Specific Folder
+   - Folder to Watch: 문서를 업로드할 폴더 선택
+   - Event: File Created
+
+**설명**: 지정된 폴더에 새 파일이 업로드되면 자동으로 워크플로우가 실행됩니다.
+
+### 1.2 Download File 노드
+
+1. **Google Drive 노드 추가**
+2. **Operation**: Download
+3. **File ID**: `={{ $json.id }}`
+
+**설명**: Trigger에서 감지된 파일을 다운로드합니다.
+
+### 1.3 Supabase Vector Store (Insert 모드)
+
+1. **Supabase Vector Store 노드 추가**
+2. **Mode**: Insert
+3. **Table Name**: documents
+
+**Supabase 테이블 설정**:
+```sql
+-- Vector extension 활성화
+create extension if not exists vector;
+
+-- documents 테이블 생성
+create table documents (
+  id bigserial primary key,
+  content text,
+  metadata jsonb,
+  embedding vector(1536)
+);
+
+-- 벡터 유사도 검색을 위한 함수
+create function match_documents (
+  query_embedding vector(1536),
+  match_threshold float,
+  match_count int
+)
+returns table (
+  id bigint,
+  content text,
+  metadata jsonb,
+  similarity float
+)
+language sql stable
+as $$
+  select
+    documents.id,
+    documents.content,
+    documents.metadata,
+    1 - (documents.embedding <=> query_embedding) as similarity
+  from documents
+  where 1 - (documents.embedding <=> query_embedding) > match_threshold
+  order by similarity desc
+  limit match_count;
+$$;
+```
+
+### 1.4 Default Data Loader
+
+1. **Default Data Loader 서브노드 추가**
+2. **설정**:
+   - Data Type: Binary
+   - Text Splitting Mode: Custom
+   - Metadata: 
+     - Name: `document_title`
+     - Value: `={{ $json.name }}`
+
+**메타데이터 추가 이유**: 
+- 어떤 문서에서 온 정보인지 추적 가능
+- 출처 표시 가능
+- 문서별 필터링 가능
+
+### 1.5 Recursive Character Text Splitter
+
+1. **Recursive Character Text Splitter 서브노드 추가**
+2. **설정**:
+   - Chunk Size: 1000 (기본값)
+   - Chunk Overlap: 200
+   - Split Code: markdown
+
+**청크 설정 가이드**:
+- **Chunk Size**: 1000자 권장 (너무 크면 검색 정확도 하락, 너무 작으면 맥락 손실)
+- **Overlap**: 200자 권장 (청크 간 연결성 유지)
+- **Split Code**: markdown (문서 구조 보존)
+
+### 1.6 Embeddings OpenAI
+
+1. **Embeddings OpenAI 서브노드 추가**
+2. **Model**: text-embedding-3-small 또는 text-embedding-ada-002
+
+**중요**: 벡터 차원 수 확인
+- text-embedding-3-small: 1536 차원
+- text-embedding-ada-002: 1536 차원
+- Supabase 테이블의 vector(1536)와 일치해야 함
+
+## 2단계: AI RAG Agent 챗봇 구축
+
+### 2.1 Chat Trigger 설정
+
+1. **When chat message received 노드 추가**
+2. **설정**:
+   - Public: ON (외부 접근 허용)
+   - Initial Messages: 
+     ```
+     안녕하세요
+     나는 회사사규를 기반으로 사내규정을 알려주는 Agent입니다.
+     ```
+
+**Webhook URL**: 
+```
+https://your-n8n-instance.com/webhook/XXXX
+```
+
+### 2.2 AI Agent 설정
+
+1. **AI Agent 노드 추가**
+2. **System Message** (핵심 프롬프트):
+
+```
+You are a specialized assistant for the Win-Win Growth Index evaluation conducted by the Subcommittee for Win-Win Growth (동반성장위원회, 동반위). You must answer ONLY based on the provided Korean documents ("context").
+
+## Operating Context:
+- The documents are the official guidelines for the Subcommittee for Win-Win Growth's annual Win-Win Growth Index evaluation system.
+- Our company uses these documents to prepare for the evaluation and aims to achieve the **highest possible grade**.
+- Our industry is **Information Services (정보서비스업)**. All answers MUST strictly follow the criteria applicable to **Information Services** sector.
+
+## Core Rules:
+
+1. **Single Source of Truth**: 
+   - Use ONLY the provided context documents as your information source.
+   - Do NOT use external knowledge, prior training data, assumptions, or speculation.
+   - Do NOT use web_search, web_fetch, or any other external tools to retrieve information.
+   - If information is not in the context, you must explicitly state this limitation.
+
+2. **Industry-Specific Focus**:
+   - All responses must be tailored to **정보서비스업 (Information Services)** criteria.
+   - If a question involves multiple industries, extract and provide ONLY the information relevant to Information Services.
+   - If the context contains information only for other industries, respond: "해당 문서에는 정보서비스업에 대한 정보가 없습니다."
+
+3. **Language Requirements**:
+   - ALL responses must be written in **Korean**, regardless of the user's query language.
+   - Preserve official terminology and phrasing from the source documents.
+   - If asked in English or other languages, still respond in Korean using only the context.
+
+4. **Information Unavailability Protocol**:
+   - When the context lacks necessary information, respond exactly: "해당 문서에는 정보가 없습니다."
+   - Do not attempt to fill gaps with general knowledge or assumptions.
+   - Do not apologize excessively; simply state the limitation clearly.
+
+5. **Response Quality Standards**:
+   - Provide precise, unambiguous, and complete answers within the context boundaries.
+   - Include sufficient detail to support achieving the highest evaluation grade.
+   - When helpful, quote or closely paraphrase relevant passages in Korean.
+   - Maintain conciseness while ensuring completeness.
+   - Structure complex answers with clear organization (e.g., numbered steps, criteria lists).
+
+6. **Accuracy and Precision**:
+   - Do not speculate beyond what is explicitly stated in the documents.
+   - Do not generalize or extrapolate beyond the provided information.
+   - Preserve the exact intent, criteria, and requirements as written in the source documents.
+   - Pay special attention to numerical thresholds, deadlines, submission requirements, and evaluation criteria.
+
+## Evaluation-Specific Guidance:
+
+- **Goal Orientation**: Frame answers to help the company achieve the top grade by clearly explaining requirements, standards, and best practices from the documents.
+- **Practical Application**: When explaining criteria, include practical implications for preparation and compliance.
+- **Multi-part Questions**: Address all components of complex questions systematically.
+- **Clarification**: If a question is ambiguous but answerable from context, provide the most relevant interpretation for Information Services sector.
+
+## Response Format:
+- Use clear, professional Korean suitable for business documentation.
+- Organize information logically with appropriate formatting when needed.
+- Cite specific document sections or criteria when relevant to establish authority.
+- Keep responses focused and actionable.
+
+**Output Language**: Korean only (한국어만 사용)
+```
+
+### 2.3 OpenAI Chat Model
+
+1. **OpenAI Chat Model 서브노드 추가**
+2. **Model**: gpt-4o (최신 모델)
+
+**모델 선택 가이드**:
+- **gpt-4o**: 가장 정확하고 빠름 (권장)
+- **gpt-4-turbo**: 긴 컨텍스트 필요 시
+- **gpt-3.5-turbo**: 비용 절감 필요 시
+
+### 2.4 Supabase Vector Store (Retrieve-as-Tool 모드)
+
+1. **Supabase Vector Store 서브노드 추가** (AI Agent에 연결)
+2. **Mode**: Retrieve as Tool
+3. **Tool Description**:
+   ```
+   Retrieve internal company documents related to policies, rules, or procedures based on semantic similarity to the question.
+   ```
+4. **Table Name**: documents
+5. **Use Reranker**: ON (체크)
+
+**검색 설정**:
+- **Top K**: 5-10 (관련 청크 개수)
+- **Similarity Threshold**: 0.7 이상
+
+### 2.5 Embeddings OpenAI (Retrieve용)
+
+1. **Embeddings OpenAI 서브노드 추가** (Vector Store에 연결)
+2. **Model**: text-embedding-3-small
+
+**중요**: Insert 시 사용한 모델과 동일해야 함!
+
+### 2.6 Cohere Reranker
+
+1. **Reranker Cohere 서브노드 추가** (Vector Store에 연결)
+2. **Model**: rerank-multilingual-v3.0 (한국어 지원)
+
+**Reranker 역할**:
+- Vector 검색으로 가져온 후보 문서들을 재정렬
+- Cross-Encoder 방식으로 질문과 문서의 관련도를 재평가
+- 검색 정확도를 30-50% 향상
+
+### 2.7 Postgres Chat Memory
+
+1. **Postgres Chat Memory 서브노드 추가** (AI Agent에 연결)
+2. **Context Window Length**: 10 (최근 10개 대화 기억)
+
+**PostgreSQL 테이블 설정** (Supabase 내장 PostgreSQL 사용):
+```sql
+-- 대화 기록 테이블
+create table chat_memory (
+  id bigserial primary key,
+  session_id text not null,
+  message_type text not null, -- 'human' or 'ai'
+  content text not null,
+  created_at timestamp with time zone default now()
+);
+
+-- 인덱스 생성
+create index idx_chat_memory_session on chat_memory(session_id);
+create index idx_chat_memory_created on chat_memory(created_at);
+```
+
+## 출력 예시
+
+### 질문 1: 동반성장지수란 무엇인가요?
+
+**AI 답변**:
+```
+동반성장지수는 대·중소기업 간 동반성장을 촉진하기 위하여 동반성장의 수준을 평가하여 계량화한 지표입니다.
+
+정부의 「대·중소기업 동반성장 추진대책」 발표 시 동반성장지수를 산정·공표하기로 확정되었으며(2010.9.29), 대·중소기업 간 동반성장 촉진을 위하여 동반위 의결로 선정된 대기업 별 동반성장지수를 연1회 산정·공표하고 있습니다(2011년도 평가부터 공표).
+
+동반성장지수는 ①동반위의 동반성장 종합평가와 ②공정위의 공정거래협약 이행평가 결과를 50:50으로 합산하여 산정·공표됩니다.
+```
+
+### 질문 2: 정보서비스업 평가대상 기준은?
+
+**AI 답변**:
+```
+평가대상으로 신규 편입된 중견기업(자산 총액 5조원 미만)은 평가결과 공표를 1년 간 유예됩니다.
+
+2025년도 정보서비스업 평가대상 기업은 다음과 같습니다:
+- 네이버
+- 카카오
+- 한화시스템
+- 롯데정보통신
+- 삼성SDS
+- SK주식회사
+- LG CNS
+- (기타 정보서비스업 분류 기업)
+
+매출액 상위 기업 중 사회적 관심이 크고 동반성장지수 평가에 따른 파급효과가 큰 기업을 대상으로 매년 확대·선정하고 있습니다.
+```
+
+## 고급 활용 팁
+
+### 1. 청크 사이즈 최적화
+
+문서 특성에 따라 조정:
+
+```javascript
+// 긴 설명이 많은 문서
+Chunk Size: 1500, Overlap: 300
+
+// 짧은 정보가 많은 문서 (FAQ 등)
+Chunk Size: 500, Overlap: 100
+
+// 코드나 기술 문서
+Chunk Size: 2000, Overlap: 400
+```
+
+### 2. 멀티 인덱스 검색
+
+여러 문서 세트를 분리하여 저장:
+
+```sql
+-- 평가 기준 문서
+create table documents_evaluation (
+  id bigserial primary key,
+  content text,
+  metadata jsonb,
+  embedding vector(1536)
+);
+
+-- FAQ 문서
+create table documents_faq (
+  id bigserial primary key,
+  content text,
+  metadata jsonb,
+  embedding vector(1536)
+);
+```
+
+### 3. 메타데이터 필터링
+
+특정 문서만 검색:
+
+```javascript
+// System Prompt에 추가
+When searching, prioritize documents from the latest year.
+Filter by metadata: year >= 2024
+```
+
+### 4. 하이브리드 검색
+
+BM25 (키워드 검색) + Vector 검색 결합:
+
+```sql
+-- Supabase에서 Full-Text Search 추가
+create index documents_content_idx on documents using gin(to_tsvector('korean', content));
+
+-- 하이브리드 검색 함수
+create function hybrid_search(
+  query_text text,
+  query_embedding vector(1536),
+  match_count int
+)
+returns table (
+  id bigint,
+  content text,
+  similarity float
+)
+as $$
+  -- Vector 검색 + Keyword 검색 결합
+$$;
+```
+
+### 5. 답변 품질 모니터링
+
+대화 기록 분석:
+
+```sql
+-- 자주 묻는 질문 분석
+select content, count(*) as question_count
+from chat_memory
+where message_type = 'human'
+group by content
+order by question_count desc
+limit 10;
+
+-- 답변 없는 질문 찾기
+select content
+from chat_memory
+where message_type = 'ai' 
+  and content like '%해당 문서에는 정보가 없습니다%'
+limit 20;
+```
+
+### 6. 자동 문서 업데이트
+
+정기적으로 문서 갱신:
+
+1. **Cron 트리거** 추가
+2. 오래된 문서 삭제
+3. 새 문서 벡터화
+
+```sql
+-- 오래된 문서 삭제
+delete from documents
+where metadata->>'year' < '2024';
+```
+
+## 문제 해결
+
+### 자주 발생하는 문제들
+
+#### 1. 벡터 차원 불일치 에러
+
+**증상**: `dimension mismatch` 에러
+**해결책**:
+```sql
+-- Supabase 테이블 확인
+select * from documents limit 1;
+
+-- 벡터 차원 수정
+alter table documents
+  alter column embedding type vector(1536);
+```
+
+#### 2. 검색 결과가 없음
+
+**증상**: "해당 문서에는 정보가 없습니다" 반복
+**해결책**:
+- Top K 값 증가 (5 → 10)
+- Similarity Threshold 낮추기 (0.7 → 0.5)
+- 청크 사이즈 조정
+- 문서가 제대로 벡터화되었는지 확인:
+
+```sql
+select count(*) from documents;
+select metadata->>'document_title', count(*)
+from documents
+group by metadata->>'document_title';
+```
+
+#### 3. Reranker 속도 느림
+
+**증상**: 답변 생성이 5초 이상 걸림
+**해결책**:
+- Top K 줄이기 (10 → 5)
+- Reranker 모델 변경: rerank-english-v3.0 (영어만) 또는 비활성화
+- Cohere API 플랜 업그레이드
+
+#### 4. 메모리 오버플로우
+
+**증상**: Context length exceeded 에러
+**해결책**:
+```javascript
+// System Prompt 줄이기
+// Context Window Length 줄이기 (10 → 5)
+// 청크 사이즈 줄이기 (1000 → 800)
+```
+
+#### 5. 잘못된 답변 생성
+
+**증상**: 문서에 없는 내용을 답변
+**해결책**:
+- System Prompt에 강조 추가:
+```
+CRITICAL: You must NEVER generate information that is not explicitly stated in the provided context. 
+If you cannot find the answer in the context, you MUST respond: "해당 문서에는 정보가 없습니다."
+```
+
+- Temperature 낮추기 (1.0 → 0.3)
+- Tool Description 명확히:
+```
+ONLY use this tool to retrieve information. Do NOT use any other knowledge.
+```
+
+### 성능 최적화
+
+#### 벡터 검색 속도 향상
+
+```sql
+-- HNSW 인덱스 생성 (1536차원)
+create index on documents 
+using hnsw (embedding vector_cosine_ops);
+
+-- IVFFlat 인덱스 (더 빠르지만 정확도 약간 하락)
+create index on documents 
+using ivfflat (embedding vector_cosine_ops)
+with (lists = 100);
+```
+
+#### 비용 절감
+
+| 항목 | 월간 예상 비용 | 최적화 방법 |
+|------|----------------|-------------|
+| OpenAI Embedding | $5-10 | text-embedding-3-small 사용 |
+| OpenAI GPT-4o | $20-50 | 토큰 수 제한, 캐싱 |
+| Cohere Reranker | 무료-$10 | 무료 tier 사용 |
+| Supabase | 무료-$25 | 무료 tier 사용 (50만 rows까지) |
+| **총합** | **$25-85** | 최적화 시 $5-30 가능 |
+
+## 확장 아이디어
+
+### 1. 멀티 에이전트 시스템
+
+역할별 전문 에이전트:
+- **평가 전문 Agent**: 동반성장지수 평가 기준
+- **실적 관리 Agent**: 실적 제출 가이드
+- **법률 Agent**: 관련 법규 및 규정
+
+### 2. 자동 문서 요약
+
+신규 문서 업로드 시:
+- 자동 요약 생성
+- 주요 변경사항 추출
+- 이메일 알림
+
+### 3. 다국어 지원
+
+```
+- English version for global teams
+- Japanese/Chinese versions
+```
+
+### 4. 음성 인터페이스
+
+- Whisper API로 음성 → 텍스트
+- TTS로 답변 → 음성
+
+### 5. 슬랙/팀즈 통합
+
+Webhook으로 연동:
+```
+/ask 동반성장지수란?
+```
+
+## RAG vs Fine-tuning 비교
+
+| 특징 | RAG (이 가이드) | Fine-tuning |
+|------|-----------------|-------------|
+| 비용 | 낮음 ($25-85/월) | 높음 ($500+) |
+| 업데이트 | 즉시 (문서만 교체) | 재학습 필요 |
+| 정확도 | 매우 높음 (출처 기반) | 높음 |
+| 구축 시간 | 1-2일 | 1-2주 |
+| 유지보수 | 쉬움 | 어려움 |
+
+**결론**: 대부분의 경우 RAG가 더 적합!
+
+## 결론
+
+> n8n의 Advanced RAG Agent와 Reranker를 활용하면 전문가 수준의 문서 기반 챗봇을 쉽게 구축할 수 있습니다.
+> 
+> ### 핵심 장점
+> 
+> 1. **정확성**: 문서 기반 답변으로 환각(hallucination) 최소화
+> 2. **실시간 업데이트**: 문서만 교체하면 즉시 반영
+> 3. **비용 효율**: Fine-tuning 대비 1/10 비용
+> 4. **검색 품질**: Cohere Reranker로 정확도 30-50% 향상
+> 5. **대화 기억**: Postgres Memory로 문맥 유지
+> 
+> ### 활용 사례
+> 
+> - **기업 내부 지식베이스**: 사규, 매뉴얼, 가이드
+> - **고객 지원**: FAQ, 제품 문서
+> - **법률/규정**: 법률 자문, 규정 안내
+> - **교육**: 학습 자료, 교재 기반 Q&A
+> 
+> ### 다음 단계
+> 
+> 1. 문서 준비 및 Google Drive 업로드
+> 2. Supabase 설정 및 테이블 생성
+> 3. n8n 워크플로우 구축
+> 4. 테스트 및 프롬프트 최적화
+> 5. 프로덕션 배포
+
+이제 여러분만의 AI 지식 Assistant를 만들어보세요!
+
+## 참고 자료
+
+### 공식 문서
+- [n8n 공식 문서](https://docs.n8n.io/)
+- [n8n AI Agents](https://docs.n8n.io/integrations/builtin/cluster-nodes/root-nodes/n8n-nodes-langchain.agent/)
+- [OpenAI Embeddings](https://platform.openai.com/docs/guides/embeddings)
+- [Cohere Rerank](https://docs.cohere.com/docs/rerank)
+- [Supabase Vector](https://supabase.com/docs/guides/ai/vector-columns)
+- [PostgreSQL pgvector](https://github.com/pgvector/pgvector)
+
+### 커뮤니티
+- [n8n 커뮤니티](https://community.n8n.io/)
+- [Supabase Discord](https://discord.supabase.com/)
+
+### RAG 관련 자료
+- [RAG 가이드](https://www.pinecone.io/learn/retrieval-augmented-generation/)
+- [Vector Database 비교](https://superlinked.com/vector-db-comparison/)
+- [Chunking Strategies](https://www.pinecone.io/learn/chunking-strategies/)
+
+---
+
+## FAQ
+
+### Q1. RAG와 일반 챗봇의 차이는?
+**A**: RAG는 실제 문서를 검색하여 답변하므로:
+- 정확한 정보 제공 (환각 최소화)
+- 출처 추적 가능
+- 실시간 문서 업데이트 반영
+
+### Q2. Reranker를 꼭 사용해야 하나?
+**A**: 선택사항이지만 강력히 권장:
+- 검색 정확도 30-50% 향상
+- 특히 한국어는 multilingual 모델 사용 시 효과 큼
+- 무료 tier로도 충분
+
+### Q3. 어떤 문서 형식을 지원하나?
+**A**: 
+- Markdown (.md) - 권장
+- PDF - 자동 파싱
+- Word (.docx)
+- Text (.txt)
+- HTML
+
+### Q4. 문서가 업데이트되면?
+**A**: 
+1. Google Drive에 새 파일 업로드
+2. 자동으로 벡터화
+3. 즉시 챗봇에 반영
+
+### Q5. 여러 사람이 동시에 사용 가능한가?
+**A**: 네, Session ID로 대화 분리:
+```javascript
+// URL에 세션 ID

@@ -1,0 +1,459 @@
+### n8n과 Perplexity API를 활용하여 매월 자동으로 주요 주식 종목을 심층 분석하고, AI Agent가 향후 주가에 영향을 미칠 요인들을 정리하여 <br> Airtable에 저장하는 시스템 구축 가이드입니다.
+
+## 목차
+
+- [시스템 개요](#시스템-개요)
+- [사전 준비사항](#사전-준비사항)
+- [Airtable 데이터베이스 구축](#airtable-데이터베이스-구축)
+- [n8n 워크플로우 구축](#n8n-워크플로우-구축)
+- [고급 활용 팁](#고급-활용-팁)
+- [문제 해결](#문제-해결)
+- [결론](#결론)
+
+## 시스템 개요
+
+이 가이드에서는 매월 자동으로 또는 채팅을 통해 주식 종목(Ticker)을 입력받아, AI Agent가 Perplexity를 활용하여 심층 리서치를 수행하고, 향후 3-12개월 주가에 영향을 미칠 핵심 요인들을 분석하여 Airtable에 저장하는 시스템을 구축합니다.
+
+### 워크플로우 구조
+
+> &nbsp;&nbsp;&nbsp; **자동 실행 경로**: 
+> &nbsp;&nbsp;&nbsp; 1. **Schedule Trigger (매월)** → 2. **Airtable 종목 조회** → 3. **AI Agent 리서치** → 4. **Airtable 저장**
+> 
+> &nbsp;&nbsp;&nbsp; **수동 실행 경로**:
+> &nbsp;&nbsp;&nbsp; 1. **Chat Trigger** → 2. **AI Agent 리서치** → 3. **Airtable 저장**
+
+![워크플로우 구조](./n8n_Source/11/2.%20WF.png)
+
+<br>
+
+### 주요 기능
+
+- 매월 1회 자동 실행 (매월 1일 오전 6시)
+- Airtable에서 관심 종목 자동 조회
+- Chat 인터페이스를 통한 수동 조회 지원
+- Perplexity Deep Search로 최신 30일 정보 수집
+- GPT-4.1 기반 한국어 금융 분석
+- 주가 영향 요인별 High/Medium/Low 임팩트 분류
+- Airtable에 구조화된 리서치 결과 저장
+
+## 사전 준비사항
+
+- n8n 설치 및 실행
+- OpenAI API 키 (GPT-4.1 사용)
+- Perplexity API 키
+- Airtable 계정 및 Personal Access Token
+
+## Airtable 데이터베이스 구축
+
+### 1. Base 생성
+
+1. [Airtable](https://airtable.com/)에서 새 Base 생성
+2. Base 이름: `stock-research`
+
+### 2. 테이블 구조
+
+#### Table 1: stock-list (종목 목록)
+
+이 테이블에는 정기적으로 리서치할 주식 종목을 저장합니다.
+
+**필드 구조**:
+- **Ticker** (Single line text): 주식 티커 심볼 (예: TSLA, AAPL, NVDA)
+- **Company Name** (Single line text): 회사명
+- **Status** (Checkbox): 리서치 활성화 여부
+- **Last Updated** (Date): 마지막 리서치 날짜
+
+**샘플 데이터**:
+| Ticker | Company Name | Status | Last Updated |
+|--------|-------------|--------|--------------|
+| TSLA   | Tesla       | ✓      | 2025-10-01   |
+| AAPL   | Apple       | ✓      | 2025-10-01   |
+| NVDA   | NVIDIA      | ✓      | 2025-10-01   |
+| MSFT   | Microsoft   |        | 2025-09-01   |
+
+#### Table 2: stock-research (리서치 결과)
+
+이 테이블에는 AI Agent의 리서치 결과가 저장됩니다.
+
+**필드 구조**:
+- **Ticker** (Single line text): 주식 티커 심볼
+- **Status** (Checkbox): 리서치 완료 여부
+- **Research** (Long text): 리서치 전체 내용 (Markdown)
+- **Source** (Long text): 참고 자료 목록
+- **Last Updated** (Date): 생성/업데이트 날짜
+
+### 3. Personal Access Token 발급
+
+1. Airtable 계정 설정 → Developer hub
+2. Personal Access Token 생성
+3. 스코프 설정:
+   - `data.records:read`
+   - `data.records:write`
+   - `schema.bases:read`
+4. 접근 가능한 Base 선택
+5. 토큰 복사하여 안전하게 보관
+
+## n8n 워크플로우 구축
+
+### 1. Schedule Trigger 설정 (자동 실행)
+
+매월 정기적으로 리서치를 실행하는 트리거입니다.
+
+1. **Schedule Trigger 노드 추가**
+2. **Trigger Interval**: Every Month
+3. **Trigger at Day**: 1 (매월 1일)
+4. **Trigger at Hour**: 6 (오전 6시)
+
+### 2. Chat Trigger 설정 (수동 실행)
+
+채팅을 통해 특정 종목을 조회할 수 있는 인터페이스입니다.
+
+1. **When chat message received 노드 추가**
+2. **Public**: True (공개 채팅 활성화)
+3. **Webhook URL**: 자동 생성됨
+
+#### 사용 방법
+
+생성된 Webhook URL로 접속하여 채팅 인터페이스에서 다음과 같이 입력:
+```
+TSLA
+```
+또는
+```
+Tesla 주식 분석해줘
+```
+
+### 3. Airtable 종목 조회
+
+Schedule Trigger에서 실행될 때, Airtable에서 활성화된 종목 목록을 가져옵니다.
+
+1. **Airtable 노드 추가** (Search records)
+2. **Operation**: Search
+3. **Base**: stock-research 선택
+4. **Table**: stock-list 선택
+5. **Filter by Formula**: `{Status}` (체크박스가 활성화된 종목만 조회)
+
+### 4. Finance Research AI Agent
+
+주식 종목에 대한 심층 리서치를 수행하는 핵심 노드입니다.
+
+#### AI Agent 노드 설정
+
+1. **AI Agent 노드 추가**
+2. **Prompt Type**: Define
+3. **User Prompt**:
+
+```
+={{ $json.Ticker ? $json.Ticker : $json.chatInput }}
+```
+
+이 프롬프트는 Airtable에서 가져온 Ticker 또는 Chat에서 입력받은 Ticker를 사용합니다.
+
+#### System Message (금융 분석 지침)
+
+```
+You are a meticulous financial-research agent.  
+Your only external capability is **the "Research" tool**, which returns deep research results (excerpts + URLs).
+
+When the user supplies a single stock **ticker**, produce a concise, forward-looking briefing that highlights everything likely to move the share price in the next 3-12 months.
+
+────────────────────────────────────────
+ONE-SHOT INFORMATION-GATHERING RULES
+• Make exactly ONE (1) Research call.  
+• Build one powerful query that combines the ticker / company name with these **9 high-leverage keywords** (use AND/OR as needed):
+
+  "earnings", "guidance", "merger", "lawsuit", "regulation", "analyst rating", "competitor", "macro", "product launch"
+
+• Set recency ≤ 30 days when possible.  
+• Pull ≥ 6 distinct reputable sources (filings, tier-1 media, regulator releases, analyst notes).  
+• Ignore paywalled or duplicate snippets.
+
+────────────────────────────────────────
+ANALYSIS & SYNTHESIS RULES
+• Cross-check facts; flag discrepancies.  
+• Map each fact to a share-price driver; rank **High / Medium / Low** impact.  
+• Focus on the future; use history only for context.
+
+────────────────────────────────────────
+OUTPUT  **JSON** — EXACT SHAPE REQUIRED
+모델은 반드시 **다음 구조의 JSON 한 덩어리만** 출력해야 합니다:  
+
+{
+  "ticker": "<XYZ>",
+  "research": "<MARKDOWN_BODY>",
+  "sources": "<NUMBERED_SOURCE_LIST>"
+}
+
+<MARKDOWN_BODY> (한국어·Markdown)
+
+# <Company name> (<TICKER>) — Price-Impact Briefing  
+_Last updated: <YYYY-MM-DD>_
+
+## Executive Snapshot  
+• 전일 종가: <USD>  
+• 시가총액: <USD bn>  
+• 다음 실적 발표: <YYYY-MM-DD>  
+• 핵심 투자 포인트(한 줄).
+
+## High-Impact Drivers  
+- **Driver:** <이슈·사건>  
+  • **방향:** + / −  
+  • **시점:** 예) 3Q-4Q  
+  • **근거:** (see #n)  
+  • **설명:** 1-2줄 핵심 메커니즘
+
+- **Driver:** <다음 이슈>  
+  • **방향:** …  
+  • **시점:** …  
+  • **근거:** …  
+  • **설명:** …
+
+## Medium- / Low-Impact Drivers  
+• 불릿 리스트.
+
+## Upcoming Catalysts & Timeline  
+YYYY-MM-DD — 이벤트 — 예상 영향
+
+## Bear vs Bull Checklist  
+**Bullish:** …  
+**Bearish:** …
+
+## Source List  
+(아래 <NUMBERED_SOURCE_LIST>와 일치하도록 인라인 번호 표기)
+
+<NUMBERED_SOURCE_LIST>
+1. [기사·문서 제목] – URL
+2. …
+
+모든 주장에는 (see #n) 형태로 인라인 인용.
+────────────────────────────────────────
+STYLE GUIDE
+• 바쁜 포트폴리오 매니저용: 총 1500 ~ 2000 단어 이내.  
+• 결과는 **한국어**로 작성하되 필수 재무 용어는 원어 그대로 사용.  
+• 숫자·인용 무단 생성 금지; 데이터 없으면 "n/a".  
+
+────────────────────────────────────────
+The user prompt will supply:  
+`Ticker: <XYZ>`
+```
+
+#### OpenAI Chat Model 설정
+
+1. **OpenAI Chat Model 노드 추가**
+2. **Model**: GPT-4.1 선택
+3. AI Agent 노드의 Chat Model 입력에 연결
+
+#### Simple Memory 설정
+
+1. **Memory Buffer Window 노드 추가**
+2. **Session ID Type**: Custom Key
+3. **Session Key**: `={{ $json.sessionId || "scheduled_research_session" }}`
+4. **Context Window Length**: 10
+5. AI Agent 노드의 Memory 입력에 연결
+
+#### Perplexity Research Tool 설정
+
+1. **Perplexity Tool 노드 추가** (Research)
+2. **Search Recency**: month (최근 1개월)
+3. AI Agent 노드의 Tool 입력에 연결
+
+이 설정으로 AI Agent는 최근 30일 이내의 금융 뉴스, 실적 발표, 애널리스트 리포트 등을 검색합니다.
+
+#### Structured Output Parser 설정
+
+일관된 JSON 형식으로 출력을 받기 위해 Parser를 사용합니다.
+
+1. **Structured Output Parser 노드 추가**
+2. **JSON Schema Example**:
+
+```json
+{
+  "ticker": "TSLA",
+  "research": "# Tesla (TSLA) — Price-Impact Briefing\n_Last updated: 2025-07-08_\n\n## Executive Snapshot\n• 전일 종가: (최근 변동성 심화)\n• 시가총액: n/a\n• 다음 실적 발표: 2025-07-23\n• 핵심 투자 포인트: Q2 실적, 로보택시 기대감, 소송 리스크가 혼재된 변곡점.\n\n## High-Impact Drivers\n- **Driver:** Q2 차량 인도 실적\n  • **방향:** −\n  • **시점:** Now~Q3\n  • **근거:** (see #1, #2)\n  • **설명:** 전년 대비 감소세 지속, 경쟁사와 격차 심화\n\n## Bear vs Bull Checklist\n**Bullish:** AI·로보택시 모멘텀\n**Bearish:** 법적 리스크, 경쟁사 추격",
+  "sources": "1. [Tesla Q2 2025 Production Report] – https://ir.tesla.com/...\n2. [Tesla Deliveries Analysis] – https://electrek.co/..."
+}
+```
+
+3. AI Agent 노드의 Output Parser 입력에 연결
+
+### 5. Airtable에 리서치 결과 저장
+
+AI Agent의 분석 결과를 Airtable에 저장합니다.
+
+1. **Airtable 노드 추가** (Create a record)
+2. **Operation**: Create
+3. **Base**: stock-research 선택
+4. **Table**: stock-research 선택 (리서치 결과 테이블)
+5. **Columns 설정**:
+   - **Ticker**: `={{ $json.output.ticker }}`
+   - **Research**: `={{ $json.output.research }}`
+   - **Status**: False (초기값)
+   - **Source**: `={{ $json.output.sources }}` (선택사항)
+
+#### Mapping Mode
+
+- **Mapping Mode**: Define Below
+- **Match Columns**: 자동 매핑하지 않음
+- **Schema**: Airtable에서 자동으로 가져온 필드 구조 사용
+
+## 고급 활용 팁
+
+### 포트폴리오 다각화
+
+Airtable stock-list에 다양한 섹터의 종목을 추가하여 포트폴리오를 다각화할 수 있습니다:
+
+**Technology**: AAPL, MSFT, NVDA, GOOGL, META
+**Finance**: JPM, GS, BAC, WFC
+**Healthcare**: JNJ, PFE, UNH, ABBV
+**Consumer**: TSLA, AMZN, DIS, NKE
+**Energy**: XOM, CVX, SLB
+
+### 리서치 빈도 조정
+
+Schedule Trigger를 수정하여 다른 주기로 실행할 수 있습니다:
+
+- **주간 리서치**: Trigger Interval을 "Every Week"로 변경
+- **분기별 리서치**: Cron 표현식 사용 (`0 6 1 */3 *`)
+- **실적 시즌 집중**: 1월, 4월, 7월, 10월에만 실행
+
+### 알림 시스템 추가
+
+리서치 완료 후 Slack이나 이메일로 알림을 보낼 수 있습니다:
+
+1. **Slack 노드 추가**
+2. Airtable Create 노드 뒤에 연결
+3. **Message**: 리서치 완료 알림 및 Airtable 링크
+
+```
+{{ $json.output.ticker }} 리서치 완료!
+상세 내용: https://airtable.com/your-base-url
+```
+
+### 키워드 커스터마이징
+
+System Message의 9개 핵심 키워드를 투자 스타일에 맞게 수정할 수 있습니다:
+
+**성장주 중심**:
+```
+"revenue growth", "user metrics", "TAM expansion", "innovation", "IPO"
+```
+
+**가치주 중심**:
+```
+"P/E ratio", "dividend", "buyback", "debt reduction", "cash flow"
+```
+
+**리스크 중심**:
+```
+"lawsuit", "regulatory", "insider selling", "accounting", "leverage"
+```
+
+### 멀티 모델 비교
+
+여러 AI 모델의 분석을 비교하고 싶다면:
+
+1. AI Agent 노드를 복사
+2. 각각 다른 모델 사용 (GPT-4.1, Claude, Gemini)
+3. Merge 노드로 결과 통합
+4. 비교 분석 저장
+
+### Airtable 뷰 활용
+
+Airtable에서 다양한 뷰를 만들어 리서치 결과를 효율적으로 관리할 수 있습니다:
+
+**View 1: 최근 리서치**
+- Sort by: Last Updated (Descending)
+- Filter: Last 7 days
+
+**View 2: High Impact Stocks**
+- Filter: Research contains "High-Impact"
+- Group by: Sector
+
+**View 3: 업데이트 필요**
+- Filter: Last Updated > 30 days ago
+- Sort by: Last Updated (Ascending)
+
+### 데이터 시각화
+
+Airtable 데이터를 차트나 대시보드로 시각화하려면:
+
+1. Airtable의 Chart 블록 활용
+2. Google Data Studio나 Tableau 연동
+3. n8n에서 데이터를 가공하여 시각화 툴로 전송
+
+## 문제 해결
+
+### 자주 발생하는 문제들
+
+1. **Perplexity API 검색 결과 없음**:
+   - 티커 심볼이 정확한지 확인
+   - 회사명으로도 검색하도록 쿼리 수정
+   - Search Recency를 늘려보기 (3개월)
+
+2. **AI Agent가 JSON 형식을 반환하지 않음**:
+   - Structured Output Parser 스키마 확인
+   - System Message의 출력 형식 지침 강화
+   - Temperature를 0.2 이하로 낮춰 일관성 향상
+
+3. **Airtable 저장 실패**:
+   - Personal Access Token 권한 확인
+   - 필드 매핑이 정확한지 확인
+   - 필드 타입이 일치하는지 확인 (Text vs Long Text)
+
+4. **Chat Trigger가 응답하지 않음**:
+   - Webhook URL이 활성화되었는지 확인
+   - Public 옵션이 True인지 확인
+   - 브라우저 캐시 삭제 후 재시도
+
+5. **Schedule이 실행되지 않음**:
+   - n8n 워크플로우가 Active 상태인지 확인
+   - Timezone 설정 확인 (Asia/Seoul)
+   - Schedule Trigger 설정 재확인
+
+6. **리서치 품질이 낮음**:
+   - System Message의 키워드 조정
+   - Perplexity 검색 기간 확대
+   - 더 강력한 모델 사용 (GPT-4.1 대신 GPT-4.1 Turbo)
+
+### 디버깅 팁
+
+1. **단계별 테스트**: 
+   - Chat Trigger로 단일 종목 먼저 테스트
+   - 각 노드의 출력 확인
+   - Airtable에 제대로 저장되는지 확인
+
+2. **로그 분석**:
+   - n8n 실행 로그에서 오류 메시지 확인
+   - Perplexity API 응답 상태 확인
+   - OpenAI API 토큰 사용량 모니터링
+
+3. **Pinned Data 활용**:
+   - Airtable Search 결과를 고정
+   - 반복 테스트 시 API 호출 절약
+
+4. **JSON 검증**:
+   - AI Agent 출력을 JSON validator로 검증
+   - 특수문자나 줄바꿈 문제 확인
+
+## 결론
+
+> n8n과 Perplexity, GPT-4.1을 결합하면 월간 또는 온디맨드로 주식 종목을 심층 분석하고, 향후 주가에 영향을 미칠 핵심 요인들을 체계적으로 정리하여 Airtable에 저장하는 완전 자동화 시스템을 구축할 수 있습니다.
+> 
+> 이 워크플로우의 핵심 장점:
+> 
+> - **심층 리서치**: Perplexity Deep Search로 최신 금융 정보 수집
+> - **전략적 분석**: 주가 영향 요인별 임팩트 분류 및 타임라인 제공
+> - **자동화**: 매월 정기 실행으로 포트폴리오 모니터링 자동화
+> - **유연성**: Chat 인터페이스로 언제든 특정 종목 조회 가능
+> - **데이터 관리**: Airtable에 구조화된 리서치 결과 축적
+> 
+> 오늘 소개한 주식 리서치 자동화뿐만 아니라, 경제 지표 모니터링, 섹터 트렌드 분석, 경쟁사 비교 분석 등 다양한 금융 리서치 업무에 응용할 수 있습니다.
+
+## 참고 자료
+
+- [n8n 공식 문서](https://docs.n8n.io/)
+- [Perplexity API 문서](https://docs.perplexity.ai/)
+- [OpenAI API 문서](https://platform.openai.com/docs)
+- [Airtable API 문서](https://airtable.com/developers/web/api/introduction)
+- [Yahoo Finance](https://finance.yahoo.com/) - 주가 데이터
+- [SEC EDGAR](https://www.sec.gov/edgar) - 공시 자료
+- [Financial Modeling Prep](https://site.financialmodelingprep.com/) - 금융 API

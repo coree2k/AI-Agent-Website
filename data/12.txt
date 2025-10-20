@@ -1,0 +1,680 @@
+### n8n을 활용하여 구글 드라이브의 문서를 자동으로 벡터 데이터베이스에 저장하고, AI 에이전트가 이를 검색하여 답변하는 <br> RAG(Retrieval-Augmented Generation) 시스템 구축 가이드입니다.
+
+## 목차
+
+- [시스템 개요](#시스템-개요)
+- [사전 준비사항](#사전-준비사항)
+- [데이터베이스 초기 설정](#데이터베이스-초기-설정)
+- [RAG AI 에이전트 워크플로우](#rag-ai-에이전트-워크플로우)
+- [구글 드라이브 자동 임베딩 워크플로우](#구글-드라이브-자동-임베딩-워크플로우)
+- [고급 활용 팁](#고급-활용-팁)
+- [문제 해결](#문제-해결)
+
+## 시스템 개요
+
+이 가이드에서는 구글 드라이브에 저장된 문서들을 자동으로 벡터 데이터베이스에 임베딩하고, 채팅 인터페이스를 통해 문서 내용을 기반으로 답변하는 AI 에이전트를 구축합니다.
+
+### 워크플로우 구조
+
+![워크플로우 구조](./n8n_Source/12/2.%20WF.png)
+
+시스템은 3개의 독립적인 워크플로우로 구성됩니다:
+
+1. **데이터베이스 초기 설정 워크플로우**: 필요한 테이블과 함수를 생성
+2. **RAG AI 에이전트 워크플로우**: 사용자 질문에 대해 벡터 검색 후 AI가 답변 생성
+3. **구글 드라이브 임베딩 워크플로우**: 구글 드라이브 파일을 자동으로 벡터 DB에 추가
+
+### 주요 기능
+
+- 구글 드라이브 파일 자동 감지 및 임베딩
+- PDF, Excel, CSV, Text 등 다양한 파일 형식 지원
+- Supabase 벡터 데이터베이스 기반 유사도 검색
+- OpenAI 모델 기반 자연어 답변 생성
+- 채팅 인터페이스를 통한 대화형 상호작용
+- 메타데이터 기반 문서 추적 및 관리
+
+## 사전 준비사항
+
+- n8n 설치 및 실행
+- Supabase 계정 및 프로젝트 생성
+- Google Cloud Platform 계정 및 OAuth 인증 설정
+- OpenAI API 키
+- 구글 드라이브 접근 권한
+
+## 데이터베이스 초기 설정
+
+### 워크플로우 개요
+
+**Run Each Node Once to Set Up Database Tables** 워크플로우는 시스템에 필요한 데이터베이스 테이블과 함수를 생성합니다. 이 워크플로우는 최초 1회만 실행하면 됩니다.
+
+### 노드 구성
+
+#### 1. Create Documents Table and Match Function
+
+Supabase에 문서 테이블과 매칭 함수를 생성합니다.
+
+**생성되는 테이블**:
+- `documents`: 문서 정보와 벡터 임베딩을 저장하는 메인 테이블
+
+**생성되는 함수**:
+- `match_documents`: 벡터 유사도 기반 문서 검색 함수
+
+**설정**:
+```sql
+-- documents 테이블 생성
+CREATE TABLE documents (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  content TEXT,
+  metadata JSONB,
+  embedding VECTOR(1536),
+  created_at TIMESTAMP DEFAULT NOW()
+);
+
+-- 벡터 유사도 검색 함수 생성
+CREATE FUNCTION match_documents(
+  query_embedding VECTOR(1536),
+  match_threshold FLOAT,
+  match_count INT
+)
+RETURNS TABLE (
+  id UUID,
+  content TEXT,
+  metadata JSONB,
+  similarity FLOAT
+)
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    documents.id,
+    documents.content,
+    documents.metadata,
+    1 - (documents.embedding <=> query_embedding) AS similarity
+  FROM documents
+  WHERE 1 - (documents.embedding <=> query_embedding) > match_threshold
+  ORDER BY similarity DESC
+  LIMIT match_count;
+END;
+$$ LANGUAGE plpgsql;
+```
+
+#### 2. Create Document Metadata Table
+
+문서의 메타데이터를 별도로 관리하는 테이블을 생성합니다.
+
+**설정**:
+```sql
+CREATE TABLE document_metadata (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  file_id TEXT UNIQUE,
+  file_name TEXT,
+  file_type TEXT,
+  drive_path TEXT,
+  last_modified TIMESTAMP,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+#### 3. Create Document Rows Table (for Tabular Data)
+
+Excel이나 CSV 같은 테이블 형태 데이터를 저장하는 테이블을 생성합니다.
+
+**설정**:
+```sql
+CREATE TABLE document_rows (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  document_id UUID REFERENCES documents(id),
+  row_number INTEGER,
+  row_data JSONB,
+  created_at TIMESTAMP DEFAULT NOW()
+);
+```
+
+### 실행 방법
+
+1. n8n에서 워크플로우를 임포트합니다.
+2. Supabase 연결 정보를 설정합니다.
+3. "Execute Workflow" 버튼을 클릭하여 1회 실행합니다.
+4. 각 노드가 성공적으로 실행되었는지 확인합니다.
+
+## RAG AI 에이전트 워크플로우
+
+### 워크플로우 개요
+
+**RAG AI Agent with Chat Interface** 워크플로우는 사용자의 질문을 받아 벡터 데이터베이스에서 관련 문서를 검색하고, AI가 컨텍스트를 기반으로 답변을 생성합니다.
+
+### 노드 구성
+
+#### 1. When chat message received
+
+채팅 인터페이스를 통해 사용자 메시지를 수신합니다.
+
+**트리거 타입**: Chat Trigger
+**설정**: 채팅 UI를 통한 실시간 메시지 수신
+
+#### 2. Edit Fields
+
+사용자 입력을 처리하기 전에 필드를 정리하고 포맷합니다.
+
+#### 3. RAG AI Agent
+
+AI 에이전트의 핵심 노드로, 다음 도구들을 활용합니다:
+
+**사용 가능한 도구**:
+
+##### a) Webhook
+외부 시스템과의 연동을 위한 웹훅 엔드포인트
+
+##### b) OpenAI Chat Model + Postgres Chat Memory
+- **모델**: GPT-4 또는 GPT-3.5-turbo
+- **메모리**: PostgreSQL 기반 대화 히스토리 저장
+- **설정**:
+  ```
+  Temperature: 0.7
+  Max Tokens: 2000
+  ```
+
+##### c) List Documents
+벡터 DB에 저장된 문서 목록을 조회합니다.
+
+**Supabase 쿼리**:
+```sql
+SELECT 
+  id,
+  metadata->>'file_name' as file_name,
+  metadata->>'file_type' as file_type,
+  created_at
+FROM documents
+ORDER BY created_at DESC
+LIMIT 50;
+```
+
+##### d) Get File Contents
+특정 문서의 전체 내용을 가져옵니다.
+
+**Supabase 쿼리**:
+```sql
+SELECT content, metadata
+FROM documents
+WHERE id = '{{ $json.document_id }}'
+```
+
+##### e) Query Document Store
+벡터 유사도 검색을 통해 관련 문서를 찾습니다.
+
+**Supabase Vector Store 설정**:
+- **Search Type**: Similarity Search
+- **Top K**: 5
+- **Similarity Threshold**: 0.7
+
+##### f) Embeddings OpenAI
+OpenAI의 임베딩 모델을 사용하여 쿼리를 벡터로 변환합니다.
+
+**모델**: text-embedding-ada-002
+
+#### 4. Request to Webhook
+
+선택적으로 외부 시스템에 결과를 전송합니다.
+
+### AI 에이전트 프롬프트 설정
+
+**System Prompt**:
+```
+You are a helpful AI assistant with access to a document database. 
+
+Your capabilities:
+1. Search documents by semantic similarity using the Query Document Store tool
+2. List all available documents using the List Documents tool
+3. Retrieve full document contents using the Get File Contents tool
+
+When answering questions:
+- First, use the Query Document Store tool to find relevant documents
+- If needed, use Get File Contents to read the full document
+- Provide accurate answers based on the retrieved information
+- Always cite the source documents you used
+- If you cannot find relevant information, say so clearly
+
+Be concise but comprehensive. Use Korean language for responses.
+```
+
+### 실행 방법
+
+1. 워크플로우를 활성화합니다.
+2. n8n의 채팅 인터페이스를 엽니다.
+3. 문서에 대한 질문을 입력합니다.
+4. AI 에이전트가 검색 후 답변을 생성합니다.
+
+## 구글 드라이브 자동 임베딩 워크플로우
+
+### 워크플로우 개요
+
+**Tool to Add a Google Drive File to Vector DB** 워크플로우는 구글 드라이브의 파일을 자동으로 감지하여 벡터 데이터베이스에 임베딩합니다.
+
+### 노드 구성
+
+#### 1. File Created (Trigger)
+
+구글 드라이브에서 새 파일이 생성되거나 업데이트될 때 트리거됩니다.
+
+**트리거 설정**:
+- **Trigger On**: File Created or Updated
+- **Watch Folder**: 특정 폴더 또는 전체 드라이브
+
+#### 2. File Updated (Trigger)
+
+파일 업데이트를 감지하는 보조 트리거입니다.
+
+#### 3. Loop Over Items
+
+여러 파일이 동시에 감지된 경우 각 파일을 순차적으로 처리합니다.
+
+#### 4. Set File ID
+
+파일 ID를 추출하여 변수로 설정합니다.
+
+**표현식**:
+```javascript
+{{ $json.id }}
+```
+
+#### 5. Delete Old Data Rows
+
+기존 파일의 경우 이전 데이터를 삭제합니다.
+
+**Supabase 쿼리**:
+```sql
+DELETE FROM documents
+WHERE metadata->>'file_id' = '{{ $json.file_id }}'
+```
+
+#### 6. Insert Document Metadata
+
+파일의 메타데이터를 저장합니다.
+
+**Supabase Insert**:
+```json
+{
+  "file_id": "{{ $json.id }}",
+  "file_name": "{{ $json.name }}",
+  "file_type": "{{ $json.mimeType }}",
+  "drive_path": "{{ $json.webViewLink }}",
+  "last_modified": "{{ $json.modifiedTime }}"
+}
+```
+
+#### 7. Download File
+
+구글 드라이브에서 파일을 다운로드합니다.
+
+**Google Drive Download**:
+- **File ID**: `{{ $json.id }}`
+- **Download as Binary**: Yes
+
+#### 8. Switch (파일 타입별 분기)
+
+파일 타입에 따라 처리 방법을 분기합니다.
+
+**분기 조건**:
+- PDF 파일: Extract PDF Text 경로
+- Excel 파일: Extract from Excel 경로
+- CSV 파일: Extract from CSV 경로
+- 텍스트 파일: Extract Document Text 경로
+
+#### 9-1. Extract PDF Text
+
+PDF 파일에서 텍스트를 추출합니다.
+
+**PDF Extract 설정**:
+- **Extract Mode**: Text Only
+- **Output Format**: Plain Text
+
+#### 9-2. Extract from Excel
+
+Excel 파일의 데이터를 추출합니다.
+
+**Excel Extract 설정**:
+- **Binary Property**: data
+- **Read As**: JSON
+- **Header Row**: Yes
+
+#### 9-3. Extract from CSV
+
+CSV 파일을 파싱합니다.
+
+**CSV Parse 설정**:
+```javascript
+Papa.parse({{ $json.data }}, {
+  header: true,
+  dynamicTyping: true,
+  skipEmptyLines: true
+})
+```
+
+#### 9-4. Extract Document Text
+
+일반 텍스트 문서의 내용을 추출합니다.
+
+#### 10. Aggregate
+
+여러 청크로 나뉜 데이터를 하나로 합칩니다.
+
+**Aggregation Type**: Combine All Data
+
+#### 11. Summarize (for Tabular Data)
+
+테이블 형태 데이터의 경우 각 행을 요약합니다.
+
+**OpenAI Chat Model**:
+```
+Summarize this row data in a concise manner suitable for semantic search:
+{{ JSON.stringify($json) }}
+```
+
+#### 12. Insert Table Rows
+
+테이블 행 데이터를 별도 테이블에 저장합니다.
+
+**Supabase Insert**:
+```json
+{
+  "document_id": "{{ $json.document_id }}",
+  "row_number": "{{ $json.row_number }}",
+  "row_data": {{ JSON.stringify($json) }}
+}
+```
+
+#### 13. Insert into Supabase
+
+임베딩과 함께 문서를 벡터 DB에 저장합니다.
+
+**Supabase Vector Store Insert**:
+- **Embeddings**: OpenAI Embeddings (text-embedding-ada-002)
+- **Metadata**: File ID, Name, Type, Path 포함
+
+#### 14. Embeddings OpenAI
+
+텍스트를 벡터로 변환합니다.
+
+**모델**: text-embedding-ada-002
+**Dimensions**: 1536
+
+#### 15. Set Schema
+
+스키마 정보를 설정합니다.
+
+#### 16. Update Schema for Document Metadata
+
+메타데이터 스키마를 업데이트합니다.
+
+#### 17. Output Data Loader / Default Data Loader / Character Text Splitter
+
+데이터 로딩 및 청킹 설정:
+
+**Text Splitter 설정**:
+```
+Chunk Size: 1000
+Chunk Overlap: 200
+Separator: \n\n
+```
+
+### 지원되는 파일 형식
+
+- **PDF**: 텍스트 추출 및 임베딩
+- **Excel (.xlsx, .xls)**: 시트별 데이터 추출 및 행별 임베딩
+- **CSV**: 구조화된 데이터 파싱 및 행별 임베딩
+- **텍스트 (.txt, .md)**: 직접 임베딩
+- **Google Docs**: 텍스트 변환 후 임베딩
+
+### 실행 방법
+
+1. 워크플로우를 활성화합니다.
+2. 구글 드라이브 연동을 인증합니다.
+3. 감시할 폴더를 설정합니다.
+4. 파일을 업로드하면 자동으로 처리됩니다.
+
+## 고급 활용 팁
+
+### 1. 청크 크기 최적화
+
+문서 길이와 용도에 따라 청크 크기를 조정할 수 있습니다:
+
+**긴 문서 (논문, 리포트)**:
+```
+Chunk Size: 1500
+Chunk Overlap: 300
+```
+
+**짧은 문서 (메모, 이메일)**:
+```
+Chunk Size: 500
+Chunk Overlap: 100
+```
+
+### 2. 메타데이터 필터링
+
+특정 파일 타입이나 폴더만 처리하고 싶다면 Switch 노드에 조건을 추가합니다:
+
+```javascript
+{{ $json.mimeType === 'application/pdf' }}
+{{ $json.parents[0].name === 'Important Docs' }}
+```
+
+### 3. 다국어 지원
+
+OpenAI 임베딩은 다국어를 지원하므로, 한국어와 영어 문서를 동시에 처리할 수 있습니다.
+
+### 4. 커스텀 메타데이터 추가
+
+더 풍부한 검색을 위해 메타데이터를 추가할 수 있습니다:
+
+```json
+{
+  "file_id": "{{ $json.id }}",
+  "file_name": "{{ $json.name }}",
+  "author": "{{ $json.owners[0].displayName }}",
+  "department": "{{ $json.properties.department }}",
+  "tags": {{ JSON.stringify($json.properties.tags) }},
+  "created_date": "{{ $json.createdTime }}"
+}
+```
+
+### 5. 자동 재임베딩 스케줄
+
+주기적으로 모든 문서를 재임베딩하려면 Cron 트리거를 추가합니다:
+
+```
+Schedule: 0 2 * * 0  (매주 일요일 새벽 2시)
+```
+
+## 문제 해결
+
+### 자주 발생하는 문제들
+
+#### 1. 임베딩 실패
+
+**증상**: 파일이 업로드되었지만 벡터 DB에 저장되지 않음
+
+**해결 방법**:
+- OpenAI API 키가 유효한지 확인
+- API 사용량 제한을 확인
+- 파일 크기가 너무 크면 청크 크기를 줄임
+
+#### 2. 구글 드라이브 권한 오류
+
+**증상**: "Insufficient Permission" 오류 발생
+
+**해결 방법**:
+- OAuth 토큰을 재인증
+- 구글 드라이브 API 스코프 확인
+- 파일/폴더 공유 권한 확인
+
+#### 3. 검색 결과가 부정확함
+
+**증상**: 관련 없는 문서가 검색됨
+
+**해결 방법**:
+- Similarity Threshold를 높임 (0.7 → 0.8)
+- Top K 값을 조정
+- 문서 전처리 로직 개선
+- 프롬프트 엔지니어링 개선
+
+#### 4. 메모리 부족
+
+**증상**: 대용량 파일 처리 시 워크플로우 실패
+
+**해결 방법**:
+- 파일을 더 작은 청크로 분할
+- 배치 처리 방식 도입
+- n8n 메모리 제한 증가
+
+#### 5. 테이블 데이터 처리 오류
+
+**증상**: Excel/CSV 파일이 제대로 임베딩되지 않음
+
+**해결 방법**:
+- 헤더 행이 올바르게 설정되었는지 확인
+- 빈 행이나 열을 필터링
+- 데이터 타입 변환 확인
+
+### 디버깅 팁
+
+#### 1. 로그 확인
+
+각 노드의 출력을 확인하여 데이터 흐름을 파악합니다:
+```javascript
+// Edit Fields 노드에서 로깅 추가
+{{ console.log('Current data:', $json) }}
+{{ $json }}
+```
+
+#### 2. 테스트 모드
+
+실제 파일 대신 테스트 데이터로 워크플로우를 검증합니다:
+```json
+{
+  "test_content": "This is a test document",
+  "test_metadata": {
+    "file_name": "test.txt",
+    "file_type": "text/plain"
+  }
+}
+```
+
+#### 3. 단계별 실행
+
+전체 워크플로우 대신 각 브랜치를 개별적으로 테스트합니다.
+
+## 성능 최적화
+
+### 1. 배치 임베딩
+
+여러 문서를 동시에 처리하려면 배치 크기를 설정합니다:
+
+```javascript
+// Loop Over Items 노드 설정
+Batch Size: 5
+Wait Between Batches: 1000ms
+```
+
+### 2. 캐싱 전략
+
+자주 검색되는 쿼리 결과를 캐싱합니다:
+
+```javascript
+// Redis 또는 메모리 캐시 활용
+const cacheKey = `query:${query_hash}`;
+const cached = await redis.get(cacheKey);
+if (cached) return cached;
+```
+
+### 3. 인덱스 최적화
+
+Supabase에서 벡터 인덱스를 생성합니다:
+
+```sql
+CREATE INDEX ON documents 
+USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 100);
+```
+
+## 보안 고려사항
+
+### 1. API 키 관리
+
+- n8n의 Credentials 기능을 사용하여 안전하게 저장
+- 환경 변수로 관리
+- 정기적으로 키 로테이션
+
+### 2. 접근 제어
+
+```sql
+-- Row Level Security 설정
+ALTER TABLE documents ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY user_documents ON documents
+  FOR ALL
+  USING (auth.uid() = metadata->>'user_id');
+```
+
+### 3. 데이터 암호화
+
+민감한 문서는 암호화하여 저장:
+
+```javascript
+// 암호화 전처리
+const encrypted = encrypt($json.content, process.env.ENCRYPTION_KEY);
+```
+
+## 확장 가능성
+
+### 1. 다중 소스 통합
+
+구글 드라이브 외에 다른 소스를 추가할 수 있습니다:
+- Dropbox
+- OneDrive
+- Notion
+- Confluence
+- GitHub
+
+### 2. 고급 검색 기능
+
+- 하이브리드 검색 (키워드 + 벡터)
+- 메타데이터 필터링
+- 날짜 범위 검색
+- 파일 타입 필터
+
+### 3. 분석 및 모니터링
+
+```sql
+-- 검색 통계 테이블 생성
+CREATE TABLE search_analytics (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  query TEXT,
+  results_count INTEGER,
+  user_id TEXT,
+  timestamp TIMESTAMP DEFAULT NOW()
+);
+```
+
+## 결론
+
+> n8n과 Supabase Vector Store를 활용하면 구글 드라이브의 문서를 자동으로 인덱싱하고 AI 에이전트가 검색할 수 있는 강력한 RAG 시스템을 구축할 수 있습니다. 
+> 
+> 이 시스템의 주요 장점:
+> 
+> - **자동화**: 파일 업로드만으로 자동 임베딩
+> - **확장성**: 다양한 파일 형식 지원
+> - **정확성**: 벡터 검색 기반 관련 문서 탐색
+> - **유연성**: 커스터마이징 및 확장 용이
+> 
+> 초기 설정이 복잡할 수 있지만, 한 번 구축하면 지속적으로 지식을 축적하고 활용할 수 있는 개인 맞춤형 AI 어시스턴트를 갖게 됩니다.
+> 
+> 더 나아가 슬랙 통합, 이메일 자동 응답, 업무 자동화 등으로 확장할 수 있으니, 필요에 맞게 워크플로우를 커스터마이징해보세요.
+
+## 참고 자료
+
+- [n8n 공식 문서](https://docs.n8n.io/)
+- [Supabase Vector 문서](https://supabase.com/docs/guides/ai/vector-embeddings)
+- [OpenAI Embeddings API](https://platform.openai.com/docs/guides/embeddings)
+- [Google Drive API](https://developers.google.com/drive/api/guides/about-sdk)
+- [RAG 개념 이해하기](https://www.anthropic.com/index/retrieval-augmented-generation)

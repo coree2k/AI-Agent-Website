@@ -1,0 +1,476 @@
+### n8n을 활용하여 문서 벡터 데이터베이스와 고급 AI RAG(Retrieval-Augmented Generation) 에이전트를 구축하는 완전한 가이드입니다. <br> Reranker를 활용한 고도화된 검색 시스템을 통해 더 정확한 답변을 제공하는 AI 에이전트를 만들었습니다
+## 목차
+
+- [시스템 개요](#시스템-개요)
+- [사전 준비사항](#사전-준비사항)
+- [워크플로우 1: 문서 Vector DB 구축](#워크플로우-1-문서-vector-db-구축)
+- [워크플로우 2: AI RAG Agent 구축](#워크플로우-2-ai-rag-agent-구축)
+- [고급 활용 팁](#고급-활용-팁)
+- [문제 해결](#문제-해결)
+- [한계점](#한계점)
+
+## 시스템 개요
+
+이 가이드에서는 두 가지 주요 워크플로우를 구축합니다.
+
+### 워크플로우 구조
+
+> **문서 Vector DB**
+>
+> &nbsp;&nbsp;&nbsp; 1. **Google Drive Trigger** → 2. **Download File** → 3. **Embeddings OpenAI** → 4. **Text Splitter** → 5. **Supabase Vector Store** → 6. **Default Data Loader**
+
+> **AI RAG Agent (General)**
+> 
+> &nbsp;&nbsp;&nbsp; 1. **When chat message received** → 2. **AI Agent** → 3. **Tool 연동** (OpenAI Chat Model + Supabase Vector Store + Reranker Cohere) → 4. **Memory** (Postgres Chat Memory)
+
+![워크플로우 구조](./n8n_Source/03-02/2.%20WF.png)
+
+
+
+### 주요 기능
+
+- Google Drive 문서 자동 수집 및 벡터화
+- Supabase Vector Store를 활용한 임베딩 저장
+- OpenAI 임베딩 모델로 문서 벡터화
+- Reranker Cohere를 통한 검색 결과 정확도 향상
+- 채팅 기반 AI 에이전트 구현
+- Postgres Chat Memory로 대화 컨텍스트 유지
+- 고급 검색 및 답변 생성 시스템
+
+## 사전 준비사항
+
+- n8n 설치 및 실행 (클라우드 또는 셀프 호스팅)
+- Google Drive API 접근 권한
+- Supabase 계정 및 프로젝트 생성
+- OpenAI API 키 (임베딩 및 Chat 모델용)
+- Cohere API 키 (Reranker 사용)
+- PostgreSQL 데이터베이스 (Chat Memory용)
+- Supabase에 pgvector extension 활성화 필요
+
+## 워크플로우 1: 문서 Vector DB 구축
+
+### 1. Google Drive Trigger 설정
+
+Google Drive에 새 파일이 업로드되면 자동으로 워크플로우를 실행합니다.
+
+**설정 방법**:
+
+1. **Google Drive Trigger 노드 추가**
+2. **트리거 이벤트 설정**:
+   - Trigger On: File Created
+   - Watch Folder: 모니터링할 폴더 선택
+   - Options: 파일 타입 필터 설정 가능
+
+3. **Google 계정 연동**:
+   - OAuth2 인증 완료
+   - 필요한 권한: Google Drive Read
+
+**활용 팁**:
+- 특정 폴더만 모니터링하여 불필요한 실행 방지
+- 파일 형식 필터로 PDF, DOCX 등만 처리
+
+### 2. Download File 설정
+
+Google Drive에서 파일 내용을 다운로드합니다.
+
+**기본 설정**:
+- Operation: Download
+- File ID: `{{ $json.id }}`
+- Binary Property Name: data
+
+### 3. Embeddings OpenAI 구성
+
+문서를 벡터로 변환하기 위한 임베딩 모델을 설정합니다.
+
+**Vector DB Supabase 사용**:
+
+Vector DB는 Supabase의 pgvector extension을 이용하여 임베딩 벡터를 저장하고 유사도 기반 검색을 가능하게 합니다.
+
+**주요 설정**:
+- Model: text-embedding-3-small (또는 text-embedding-ada-002)
+- API Key: OpenAI API 키
+- Dimensions: 1536 (모델에 따라 다름)
+
+**참고사항**:
+- 임베딩 모델은 문서의 의미를 수치 벡터로 변환
+- 같은 모델을 검색 시에도 사용해야 함
+- 비용 효율적인 text-embedding-3-small 권장
+
+### 4. Text Splitter 설정
+
+긴 문서를 적절한 크기로 분할합니다.
+
+**Text 분할 필요 이유**:
+
+임베딩 모델의 토큰 제한을 준수하고, 검색 시 더 정확한 결과를 얻기 위해 텍스트를 작은 청크로 나눕니다.
+
+**Recursive Character Text Splitter 설정**:
+- Chunk Size: 1000 characters (권장)
+- Chunk Overlap: 200 characters
+- Separator: `\n\n` (문단 단위)
+
+**Text Splitting 설명**:
+
+Chunk Size는 각 텍스트 조각의 크기를 의미합니다. 너무 작으면 문맥이 손실되고, 너무 크면 관련 없는 정보가 포함될 수 있습니다. Chunk Overlap은 청크 간 중복을 설정하여 문맥의 연속성을 보존합니다.
+
+**Text Splitting 원칙**:
+- Simple: 단순히 1000 Character로 나누는 방식
+- Recursive Character: 문단, 문장, 단어 순으로 재귀적 분할 (권장)
+- 적절한 Chunk Size: 800~1500 Character 사이가 일반적
+- Chunk Overlap: 100~300 Character 정도가 적절
+
+### 5. Default Data Loader 설정
+
+다양한 파일 형식을 텍스트로 추출합니다.
+
+**설정**:
+- Binary Property: data
+- Supported Formats: PDF, DOCX, TXT, MD 등
+
+### 6. Supabase Vector Store 저장
+
+벡터화된 데이터를 Supabase에 저장합니다.
+
+**분서별로 임고**:
+
+문서별로 임베딩을 생성하여 Supabase Vector Store에 저장합니다. 이를 통해 나중에 유사도 검색이 가능해집니다.
+
+**Supabase Vector Store 설정**:
+- Operation: Insert Documents
+- Table Name: documents
+- Supabase URL: 프로젝트 URL
+- Supabase Service Role Key: API 키
+- Embeddings: OpenAI Embeddings 노드 연결
+
+**중요사항**:
+- Supabase에서 pgvector extension 활성화 필수
+- 테이블 스키마에 embedding 컬럼 필요 (vector 타입)
+- metadata 컬럼으로 문서 정보 저장 가능
+
+## 워크플로우 2: AI RAG Agent 구축
+
+### 1. Chat Trigger 설정
+
+채팅 메시지를 수신하여 워크플로우를 시작합니다.
+
+**When chat message received 설정**:
+- Trigger: When chat message received
+- 웹훅 URL 자동 생성
+- 채팅 인터페이스 연결 가능
+
+### 2. AI Agent 구성
+
+핵심 에이전트 노드로, 여러 도구를 조합하여 지능적으로 사용합니다.
+
+**Tool 설정 중요**:
+
+AI Agent는 다양한 도구(Tools)를 선택적으로 사용할 수 있습니다. 사용자 질문을 분석하여 적절한 도구를 자동으로 선택합니다.
+
+**Agent 설정**:
+- Agent Type: ReAct Agent (권장)
+- System Prompt: 에이전트 역할 정의
+- Max Iterations: 5 (무한 루프 방지)
+
+**System Prompt 예시**:
+```
+당신은 전문적인 AI 어시스턴트입니다.
+사용자의 질문에 답변하기 위해 제공된 문서 검색 도구를 활용하세요.
+검색된 문서의 내용을 바탕으로 정확하고 상세한 답변을 제공하세요.
+```
+
+### 3. OpenAI Chat Model 설정
+
+AI Agent의 언어 모델을 설정합니다.
+
+**모델 설정**:
+- Model: gpt-4-turbo 또는 gpt-3.5-turbo
+- Temperature: 0.7 (창의성과 정확성 균형)
+- Max Tokens: 2000
+
+### 4. Supabase Vector Store 검색
+
+벡터 DB에서 관련 문서를 검색하는 도구입니다.
+
+**Supabase Vector Store 설정**:
+- Operation: Retrieve Documents
+- Query: `{{ $json.chatInput }}`
+- Top K: 20 (초기 검색 결과 수)
+- Supabase URL: 프로젝트 URL
+- Supabase Service Role Key: API 키
+
+**Limit 설정**:
+
+검색 결과의 수를 제한하여 AI 모델에 전달되는 컨텍스트 양을 조절합니다. 너무 많은 문서는 답변 품질을 저하시킬 수 있습니다.
+
+### 5. Reranker Cohere 설정
+
+검색 결과의 관련성을 재평가하여 가장 적합한 문서만 선택합니다.
+
+**Cohere Reranker 사용**:
+
+RAG 워크플로우에서 Reranker는 검색 정확도를 크게 향상시키는 핵심 컴포넌트입니다.
+
+**작동 원리**:
+1. Vector Store에서 초기 검색 결과 가져오기 (Top 20)
+2. Cohere Reranker가 각 문서와 쿼리의 관련성을 정밀 평가
+3. 가장 관련성 높은 문서만 최종 선택 (Top 5)
+
+**Reranker Cohere 설정**:
+- Model: rerank-english-v2.0 (다국어는 rerank-multilingual)
+- Query: 사용자 질문
+- Documents: Vector Store 검색 결과
+- Top N: 5
+- API Key: Cohere API 키
+
+**Cross-Encoder vs Bi-Encoder**:
+- Vector Search (Bi-Encoder): 빠르지만 상대적으로 덜 정확
+- Reranker (Cross-Encoder): 느리지만 매우 정확
+- 두 방식을 결합하여 속도와 정확도 모두 확보
+
+### 6. Memory 구성
+
+대화 컨텍스트를 유지하기 위한 메모리 시스템입니다.
+
+**Memory 설명**:
+
+대화형 AI는 이전 대화 내용을 기억해야 자연스러운 대화가 가능합니다. 사용자가 "그것에 대해 더 알려줘"라고 말할 때, "그것"이 무엇인지 알아야 합니다.
+
+**Postgres Chat Memory 설정**:
+- Database: PostgreSQL 연결
+- Session ID: `{{ $json.sessionId }}`
+- Context Window Size: 10 (최근 10개 메시지)
+- Table Name: chat_history
+
+**Memory 종류**:
+- **Buffer Memory**: 모든 대화 내용 저장 (간단한 사용)
+- **Contextual Chat Memory**: 대화 흐름 요약 저장
+- **Postgres Chat Memory**: 장기 저장 및 세션 관리 (권장)
+
+### 7. Vector 검색 프로세스
+
+**전체 검색 흐름**:
+
+1. 사용자 질문 입력
+2. 질문을 OpenAI Embeddings로 벡터화
+3. Supabase Vector Store에서 유사도 검색 (Top 20)
+4. Cohere Reranker로 관련성 재평가 (Top 5 선택)
+5. 선택된 문서를 컨텍스트로 AI 모델에 전달
+6. AI 모델이 문서 기반 답변 생성
+7. Postgres Chat Memory에 대화 저장
+
+**Vector 검색의 핵심**:
+
+Vector 검색은 키워드 매칭이 아닌 의미적 유사도를 기반으로 합니다. "강아지"를 검색하면 "개", "반려견" 등 의미가 유사한 내용도 함께 검색됩니다.
+
+## 고급 활용 팁
+
+### Reranker 활용 전략
+
+Reranker를 효과적으로 사용하는 방법:
+
+**2단계 검색 전략**:
+```
+1단계: Vector Search (빠른 초기 필터링)
+  - Top K: 20~50
+  - 의미적으로 유사한 문서 광범위하게 수집
+  
+2단계: Reranker (정밀 평가)
+  - Top N: 3~5
+  - Cross-attention으로 정확한 관련성 평가
+  - 최종적으로 가장 관련성 높은 문서만 선택
+```
+
+**장점**:
+- 검색 정확도 15~30% 향상
+- False Positive 크게 감소
+- 답변 품질 및 신뢰도 향상
+- 의미적으로 유사하지만 관련 없는 문서 필터링
+
+**Reranker 사용 시점**:
+- 검색 결과가 많을 때 (Top 20+)
+- 도메인 특화 문서일 때
+- 답변 정확도가 중요할 때
+- 비용보다 품질이 우선일 때
+
+### Vector 검색 최적화
+
+**임베딩 모델 선택**:
+- `text-embedding-3-small`: 512 차원, 빠르고 저렴
+- `text-embedding-3-large`: 3072 차원, 높은 정확도
+- `text-embedding-ada-002`: 1536 차원, 안정적 (레거시)
+
+**검색 파라미터 조정**:
+- **Top K (Vector Search)**: 10~50 (Reranker 사용 시 20~50)
+- **Top N (Reranker)**: 3~10
+- **Similarity Threshold**: 0.7~0.85 (너무 높으면 결과 없음)
+
+### Chunk Size 최적화
+
+문서 특성에 따른 적절한 Chunk Size:
+
+- **FAQ, Q&A**: 200~400자 (질문-답변 단위)
+- **기술 문서**: 800~1200자 (개념 단위)
+- **논문, 보고서**: 1000~1500자 (문단 단위)
+- **소설, 에세이**: 500~800자 (장면/주제 단위)
+
+**Chunk Overlap 설정**:
+- 일반적으로 Chunk Size의 10~20%
+- 중요한 정보가 청크 경계에서 끊기는 것 방지
+- 너무 크면 중복 정보로 검색 품질 저하
+
+### 다양한 문서 형식 지원
+
+**지원 형식 및 처리 방법**:
+
+| 형식 | 로더 | 특징 |
+|------|------|------|
+| PDF | PDF Loader | 텍스트 추출, 이미지는 별도 처리 |
+| DOCX | Word Loader | 서식 정보 포함 가능 |
+| Markdown | Text Loader | 구조 보존 용이 |
+| HTML | HTML Loader | 태그 제거 또는 보존 선택 |
+| JSON | JSON Loader | 구조화된 데이터 처리 |
+
+## 문제 해결
+
+### 자주 발생하는 문제들
+
+1. **벡터 저장 실패**:
+   - Supabase에서 pgvector extension이 활성화되었는지 확인
+   - 테이블 스키마 확인: `embedding vector(1536)` 컬럼 필요
+   - Service Role Key 사용 (anon key는 권한 부족)
+   - 방화벽 설정으로 n8n에서 Supabase 접근 가능한지 확인
+
+2. **검색 결과 없음 또는 부정확**:
+   - 임베딩 모델이 저장 시와 검색 시 동일한지 확인
+   - 벡터 차원이 일치하는지 확인
+   - Similarity Threshold가 너무 높지 않은지 확인 (0.7~0.8 권장)
+   - 충분한 문서가 Vector DB에 저장되었는지 확인
+
+3. **Reranker API 오류**:
+   - Cohere API 키가 유효한지 확인
+   - API 사용량 제한 확인
+   - 입력 문서 수가 너무 많지 않은지 확인 (최대 100개)
+   - Reranker 모델명이 올바른지 확인
+
+4. **메모리 오버플로우 또는 성능 저하**:
+   - Context Window Size 조정 (5~10개 권장)
+   - Top K 값을 줄여서 검색 문서 수 감소
+   - Chunk Size 조정으로 청크 수 최적화
+   - 불필요한 메타데이터 제거
+
+5. **답변 품질 저하**:
+   - System Prompt를 더 구체적으로 작성
+   - Temperature 값 조정 (0.5~0.8)
+   - Reranker 추가 또는 Top N 값 조정
+   - Chunk Size와 Overlap 재조정
+
+6. **Chat Memory 관련 문제**:
+   - PostgreSQL 연결 확인
+   - 테이블이 제대로 생성되었는지 확인
+   - Session ID가 올바르게 전달되는지 확인
+   - 오래된 대화 정기적으로 정리
+
+## 성능 최적화
+
+### 응답 속도 개선
+
+**병목 지점 파악**:
+1. Vector Search: 일반적으로 빠름 (100~300ms)
+2. Reranker: 상대적으로 느림 (500ms~2s)
+3. LLM 생성: 가장 느림 (2~10s)
+
+**최적화 전략**:
+- Reranker의 입력 문서 수 제한 (20개 이하 권장)
+- LLM 모델은 gpt-3.5-turbo 사용 (속도 우선 시)
+- Streaming 응답 활성화
+- 자주 검색되는 쿼리는 캐싱 고려
+
+### 비용 최적화
+
+**API 비용 구조**:
+- OpenAI Embeddings: $0.0001 per 1K tokens
+- OpenAI GPT-4: $0.03 per 1K tokens (입력)
+- Cohere Rerank: $1.00 per 1K searches
+- Supabase: 무료 티어 충분 (500MB DB)
+
+**비용 절감 팁**:
+- 임베딩은 text-embedding-3-small 사용
+- GPT-3.5-turbo 우선 고려 (GPT-4 대비 1/10 비용)
+- Reranker는 필요한 경우만 사용
+- Chunk Size 최적화로 불필요한 임베딩 생성 방지
+
+## 한계점
+
+### Vector Search의 한계
+
+**의미적 검색의 맹점**:
+- 키워드 정확 매칭이 중요한 경우 부족할 수 있음
+- 매우 전문적이거나 도메인 특화 용어 인식 어려움
+- 최신 정보 반영 불가 (학습 시점 이후)
+
+**해결 방법**:
+- Hybrid Search: Vector Search + Keyword Search 결합
+- Fine-tuning: 도메인 특화 임베딩 모델 학습
+- Reranker 활용으로 정확도 보완
+
+### Reranker의 한계
+
+**성능 트레이드오프**:
+- Cross-Encoder 방식으로 속도가 상대적으로 느림
+- API 비용이 추가로 발생
+- 입력 문서 수 제한 (일반적으로 100개 이하)
+
+**사용 권장 시나리오**:
+- 답변 정확도가 중요한 경우
+- 검색 결과가 많아 필터링이 필요한 경우
+- 비용보다 품질이 우선인 경우
+
+### 문서 처리 한계
+
+**지원하지 않는 형식**:
+- 이미지 내 텍스트 (OCR 필요)
+- 표, 차트의 시각적 정보
+- 복잡한 수식 (LaTeX 등)
+- 영상, 음성 파일
+
+**해결 방법**:
+- OCR 도구 추가 (Tesseract 등)
+- 멀티모달 모델 활용 (GPT-4 Vision)
+- 전처리 과정에서 구조화된 데이터로 변환
+
+## 결론
+
+> 이 가이드를 통해 n8n으로 고급 RAG 시스템을 구축할 수 있습니다.
+> 
+> **핵심 포인트 요약**:
+> 
+> 1. **문서 수집 및 벡터화**: Google Drive → Embeddings → Supabase Vector Store
+> 2. **지능형 검색**: Vector Search로 초기 검색 → Reranker로 정밀 평가
+> 3. **컨텍스트 기반 답변**: 선택된 문서를 기반으로 AI가 정확한 답변 생성
+> 4. **대화 기억**: Chat Memory로 자연스러운 대화 흐름 유지
+
+**확장 가능성**:
+
+이 시스템을 기반으로 다음과 같은 애플리케이션을 구축할 수 있습니다:
+
+- **기업 지식 베이스 챗봇**: 사내 문서 자동 검색 및 답변
+- **고객 지원 자동화**: FAQ 기반 24/7 고객 응대
+- **문서 검색 시스템**: 대용량 문서 컬렉션 의미 기반 검색
+- **개인 AI 어시스턴트**: 개인 노트, 문서 관리 및 검색
+- **연구 보조 도구**: 논문, 보고서 자동 요약 및 질의응답
+
+**다음 단계**:
+
+- 실제 문서로 테스트하며 파라미터 최적화
+- 사용자 피드백 수집 및 System Prompt 개선
+- 도메인 특화 모델 Fine-tuning 고려
+- 프로덕션 배포 시 모니터링 및 로깅 구축
+
+## 참고 자료
+
+- [n8n 공식 문서](https://docs.n8n.io/)
+- [Supabase Vector 가이드](https://supabase.com/docs/guides/ai/vector-databases)
+- [OpenAI Embeddings 문서](https://platform.openai.com/docs/guides/embeddings)
+- [Cohere Rerank API](https://docs.cohere.com/docs/reranking)
+- [LangChain RAG 가이드](https://python.langchain.com/docs/use_cases/question_answering/)
+- [Vector Database 비교](https://github.com/erikbern/ann-benchmarks)

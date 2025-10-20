@@ -1,0 +1,426 @@
+### n8n을 활용하여 여러 RSS 피드에서 AI 관련 뉴스를 자동으로 수집하고, OpenAI로 요약한 후 Gmail과 카카오톡으로 발송하는 완전 자동화 시스템 구축 가이드입니다.
+
+## 목차
+
+- [시스템 개요](#시스템-개요)
+- [사전 준비사항](#사전-준비사항)
+- [워크플로우 구조](#워크플로우-구조)
+- [단계별 구축 가이드](#단계별-구축-가이드)
+  - [1단계: 뉴스기사 수집](#1단계-뉴스기사-수집)
+  - [2단계: 데이터 필터링](#2단계-데이터-필터링)
+  - [3단계: AI 뉴스 요약](#3단계-ai-뉴스-요약)
+  - [4단계: 뉴스기사 최종 정리](#4단계-뉴스기사-최종-정리)
+  - [5단계: 뉴스기사 발송](#5단계-뉴스기사-발송)
+- [카카오톡 연동 설정](#카카오톡-연동-설정)
+- [문제 해결](#문제-해결)
+
+## 시스템 개요
+
+이 워크플로우는 매일 자동으로 여러 AI 뉴스 소스에서 최신 기사를 수집하고, AI로 요약한 후 이메일과 카카오톡으로 발송합니다.
+
+### 주요 기능
+
+- 5개의 RSS 피드에서 뉴스 자동 수집
+- 중복 및 불필요한 기사 필터링
+- OpenAI를 활용한 한국어 요약
+- 구조화된 JSON 형식으로 데이터 정리
+- Gmail과 카카오톡으로 동시 발송
+- 스케줄링을 통한 완전 자동화
+
+## 사전 준비사항
+
+- n8n 설치 및 실행 환경
+- OpenAI API 키 (GPT-4 이상 권장)
+- Gmail 계정 및 앱 비밀번호
+- 카카오 디벨로퍼스 계정 및 API 키
+- 웹 도메인 (카카오 플랫폼 등록용)
+
+## 워크플로우 구조
+
+![워크플로우 구조](./n8n_Source/10/2.%20WF.png)
+
+워크플로우는 5개의 주요 섹션으로 구성됩니다:
+
+```
+Webhook 트리거
+    ↓
+[뉴스기사 수집] → 5개 RSS Read 노드 → Merge
+    ↓
+[데이터 필터링] → Filter → Google Sheets → Edit Fields → Merge
+    ↓
+[AI News Agent] → AI Agent (Chat Model + Structured Parser) → Edit Fields
+    ↓
+[뉴스기사 최종 정리] → Aggregate → Edit Fields
+    ↓
+[뉴스기사 발송] → Gmail + Kakao Talk
+```
+
+## 단계별 구축 가이드
+
+### 1단계: 뉴스기사 수집
+
+#### Webhook 트리거 설정
+
+1. **Webhook 노드 추가**
+2. **HTTP Method**: GET 또는 POST
+3. **Path**: `/news-collection` (원하는 경로 설정)
+4. **Respond**: Immediately
+
+> **팁**: 스케줄 트리거로 변경하여 매일 자동 실행되도록 설정할 수 있습니다.
+
+#### RSS Read 노드 설정 (5개)
+
+각 RSS 노드에 다른 뉴스 소스를 설정합니다:
+
+**RSS Read1**
+```
+URL: https://www.technologyreview.com/topic/artificial-intelligence/feed
+```
+
+**RSS Read2**
+```
+URL: https://venturebeat.com/category/ai/feed
+```
+
+**RSS Read3**
+```
+URL: https://www.artificialintelligence-news.com/feed
+```
+
+**RSS Read4**
+```
+URL: https://techcrunch.com/category/artificial-intelligence/feed
+```
+
+**RSS Read5**
+```
+URL: https://www.theverge.com/ai-artificial-intelligence/rss/index.xml
+```
+
+#### Merge 노드 설정
+
+1. **Merge 노드 추가**
+2. **Mode**: Append
+3. **모든 RSS Read 노드를 Merge에 연결**
+
+### 2단계: 데이터 필터링
+
+#### Filter 노드 설정
+
+중복되거나 불필요한 기사를 필터링합니다:
+
+1. **Filter 노드 추가**
+2. **Conditions**:
+   - `title` is not empty
+   - `pubDate` within last 24 hours (선택사항)
+   - `description` length > 100 characters
+
+#### Google Sheets 노드 설정 (선택사항)
+
+수집된 기사를 Google Sheets에 기록하여 중복 체크:
+
+1. **Google Sheets 노드 추가**
+2. **Operation**: Append or Update
+3. **Spreadsheet**: 뉴스 수집용 스프레드시트
+4. **Sheet**: Sheet1
+5. **Columns**:
+   - title: `{{ $json.title }}`
+   - link: `{{ $json.link }}`
+   - pubDate: `{{ $json.pubDate }}`
+
+#### Edit Fields 노드 설정
+
+필요한 필드만 정리:
+
+1. **Edit Fields 노드 추가**
+2. **Include**: title, link, pubDate, description, content
+
+#### Merge 노드 설정
+
+필터링된 데이터를 병합합니다.
+
+### 3단계: AI 뉴스 요약
+
+#### AI Agent 노드 설정
+
+이 섹션은 OpenAI Chat Model과 Structured Output Parser를 사용합니다.
+
+**Chat Model 노드 설정**:
+
+1. **OpenAI Chat Model 노드 추가**
+2. **Model**: GPT-4 또는 GPT-4-turbo
+3. **Temperature**: 0.3 (일관성 있는 요약을 위해)
+
+**System Prompt**:
+```
+You are a professional Korean research assistant specialized in AI and technology news.
+Your task: given one RSS feed item, generate a concise but information-rich Korean summary in structured JSON format.
+
+### Rules
+
+1. **한국어 출력만.**
+2. **JSON 구조:**
+   - title: 한국어로 번역된 제목
+   - source: 출처 도메인
+   - date: YYYY-MM-DD 형식
+   - url: 원문 링크
+   - summary: 핵심 1-2문장, 200자 이내
+   - key_points: 배열 형식, 3-5개 항목, 각 40자 이내
+   - significance: 시사점, 100자 이내
+
+3. **분량**: 전체 250자 목표, 150자 미만 금지
+4. **사실만 명확하게, 광고/불필요 요소 제외**
+5. **숫자, 날짜, 구체적 정보 우선**
+
+### 출력 예시
+{
+  "title": "GPT-5 출시, 무엇이 달라졌나",
+  "source": "technologyreview.com",
+  "date": "2025-01-15",
+  "url": "https://...",
+  "summary": "OpenAI의 GPT-5는 장기 기억과 도구 사용이 크게 개선되어 업무 자동화에 즉시 적용 가능하다.",
+  "key_points": [
+    "장기 메모리 및 컨텍스트 확장",
+    "코드 도구 호출 안정화",
+    "영상/음성 입력 성능 개선"
+  ],
+  "significance": "모델 교체만으로 자동화 범위가 확대되어 반복 작업 대체 가능성이 커진다."
+}
+```
+
+**User Prompt**:
+```
+아래 RSS 기사를 읽고 JSON 형식으로 요약해주세요:
+
+title: {{ $json.title }}
+pubDate: {{ $json.pubDate }}
+link: {{ $json.link }}
+content: {{ $json.content || $json.description }}
+
+시스템 메시지의 규칙에 따라 구조화된 JSON을 반환하세요.
+```
+
+**Structured Output Parser 노드 설정**:
+
+1. **Structured Output Parser 노드 추가**
+2. **Schema Type**: JSON Schema
+3. **JSON Schema**:
+```json
+{
+  "type": "object",
+  "properties": {
+    "title": { "type": "string" },
+    "source": { "type": "string" },
+    "date": { "type": "string" },
+    "url": { "type": "string" },
+    "summary": { "type": "string" },
+    "key_points": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "significance": { "type": "string" }
+  },
+  "required": ["title", "summary", "key_points"]
+}
+```
+
+#### Edit Fields 노드 설정
+
+AI 출력을 정리:
+
+1. **Edit Fields 노드 추가**
+2. 필요한 필드만 선택하여 다음 단계로 전달
+
+### 4단계: 뉴스기사 최종 정리
+
+#### Aggregate 노드 설정
+
+모든 요약된 기사를 하나로 모읍니다:
+
+1. **Aggregate 노드 추가**
+2. **Aggregate**: All Items
+3. **Output Format**: JSON Array
+
+#### Edit Fields 노드 설정
+
+최종 발송 형식으로 정리:
+
+1. **Edit Fields 노드 추가**
+2. **마크다운 형식 생성**:
+
+```javascript
+// Expression 모드에서
+const articles = $input.all();
+let markdown = `# 🤖 오늘의 AI 뉴스 요약 (${new Date().toLocaleDateString('ko-KR')})\n\n`;
+
+articles.forEach((article, index) => {
+  const data = article.json;
+  markdown += `## ${index + 1}. ${data.title}\n\n`;
+  markdown += `**출처 & 날짜**: ${data.source} | ${data.date}\n`;
+  markdown += `**URL**: ${data.url}\n\n`;
+  markdown += `**요약 (TL;DR)**: **${data.summary}**\n\n`;
+  markdown += `**핵심 내용**:\n`;
+  data.key_points.forEach(point => {
+    markdown += `- ${point}\n`;
+  });
+  markdown += `\n**시사점**: ${data.significance}\n\n`;
+  markdown += `---\n\n`;
+});
+
+return { markdown };
+```
+
+### 5단계: 뉴스기사 발송
+
+#### Gmail 노드 설정
+
+1. **Send Message 노드 추가**
+2. **Gmail 인증 설정**
+3. **To**: 수신자 이메일
+4. **Subject**: `오늘의 AI 뉴스 요약 - {{ $now.format('YYYY-MM-DD') }}`
+5. **Email Type**: HTML
+6. **Message**:
+```html
+<html>
+<body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+{{ $json.markdown.replace(/\n/g, '<br>').replace(/## /g, '<h2>').replace(/\*\*/g, '<strong>') }}
+</body>
+</html>
+```
+
+#### Kakao Talk 노드 설정
+
+1. **HTTP Request 노드 추가**
+2. **Method**: POST
+3. **URL**: `https://kapi.kakao.com/v2/api/talk/memo/default/send`
+
+**Authentication**: OAuth2
+- Grant Type: Authorization Code
+- Authorization URL: `https://kauth.kakao.com/oauth/authorize`
+- Access Token URL: `https://kauth.kakao.com/oauth/token`
+- Client ID: [REST API 키]
+- Client Secret: [Client Secret]
+- Scope: `talk_message`
+
+**Headers**:
+- Content-Type: `application/x-www-form-urlencoded;charset=utf-8`
+
+**Body Parameters**:
+- Name: `template_object`
+- Value:
+```json
+{
+  "object_type": "text",
+  "text": {{ JSON.stringify($json.markdown) }},
+  "link": {
+    "web_url": "https://your-domain.com",
+    "mobile_web_url": "https://your-domain.com"
+  },
+  "button_title": "자세히 보기"
+}
+```
+
+## 카카오톡 연동 설정
+
+### 카카오 디벨로퍼스 설정
+
+1. **앱 생성**
+   - [카카오 디벨로퍼스](https://developers.kakao.com/) 접속
+   - '앱 생성' 클릭하여 새 앱 생성
+
+2. **플랫폼 등록**
+   - '플랫폼' 섹션에서 '웹 플랫폼 등록'
+   - 사이트 도메인 추가
+
+3. **카카오 로그인 활성화**
+   - 'Redirect URI' 등록: `https://your-n8n-domain.com/rest/oauth2-credential/callback`
+   - 'Client Secret' 발급 및 활성화
+
+4. **동의항목 설정**
+   - '카카오톡 메시지 전송' 권한을 '필수 동의'로 설정
+
+5. **API 키 복사**
+   - REST API 키를 복사하여 n8n OAuth2 설정에 사용
+
+## 문제 해결
+
+### 자주 발생하는 문제
+
+**RSS 피드 읽기 실패**
+- RSS URL이 올바른지 확인
+- 피드가 유효한 XML 형식인지 확인
+- 일부 사이트는 User-Agent 헤더 필요
+
+**AI 요약 품질 저하**
+- Temperature 값을 낮춰보기 (0.2-0.4)
+- System Prompt를 더 구체적으로 작성
+- 입력 텍스트 길이 제한 설정
+
+**카카오톡 발송 실패**
+- OAuth2 인증이 만료되지 않았는지 확인
+- 메시지 길이가 제한을 초과하지 않는지 확인
+- 플랫폼 등록이 제대로 되었는지 확인
+
+**Gmail 발송 실패**
+- Gmail 앱 비밀번호가 올바른지 확인
+- 2단계 인증이 활성화되었는지 확인
+- IMAP 설정이 활성화되었는지 확인
+
+## 고급 활용 팁
+
+### 피드 형태 메시지
+
+카카오톡에서 이미지가 포함된 카드 형태로 보내려면:
+
+```json
+{
+  "object_type": "feed",
+  "content": {
+    "title": "{{ $json.title }}",
+    "description": {{ JSON.stringify($json.summary) }},
+    "image_url": "https://your-image-url.jpg",
+    "link": {
+      "web_url": "{{ $json.url }}"
+    }
+  },
+  "buttons": [
+    {
+      "title": "자세히 보기",
+      "link": {
+        "web_url": "{{ $json.url }}"
+      }
+    }
+  ]
+}
+```
+
+### 중복 제거 강화
+
+Google Sheets를 활용한 중복 체크:
+
+1. 기사 링크를 Sheets에 저장
+2. Lookup 노드로 기존 링크 확인
+3. IF 노드로 새 기사만 처리
+
+### 스케줄링
+
+Webhook 대신 Schedule Trigger 사용:
+
+1. **Schedule Trigger 노드로 교체**
+2. **Trigger Times**: 매일 오전 9시
+3. **Timezone**: Asia/Seoul
+
+## 결론
+
+> 이 워크플로우를 통해 여러 소스에서 AI 뉴스를 자동으로 수집하고, AI로 요약하여 이메일과 카카오톡으로 받아볼 수 있습니다. 
+>
+> 설정이 다소 복잡하지만, 한 번 구축하면 매일 자동으로 큐레이션된 뉴스를 받아볼 수 있어 정보 수집 시간을 크게 절약할 수 있습니다.
+>
+> 이 가이드를 참고하여 자신만의 뉴스 자동화 시스템을 구축해보세요!
+
+## 참고 자료
+
+- [n8n 공식 문서](https://docs.n8n.io/)
+- [카카오 디벨로퍼스](https://developers.kakao.com/)
+- [OpenAI API 문서](https://platform.openai.com/docs)
+- [Gmail API 가이드](https://support.google.com/mail/answer/185833)

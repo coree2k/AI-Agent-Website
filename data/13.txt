@@ -1,0 +1,769 @@
+### n8n의 AI Agent와 Perplexity Deep Search를 활용하여 매월 한국 부동산 정책을 자동으로 리서치하고, 그 결과를 Airtable에 저장한 뒤 <br> Gmail로 자동 발송하는 시스템 구축 가이드입니다.
+
+## 목차
+
+- [시스템 개요](#시스템-개요)
+- [사전 준비사항](#사전-준비사항)
+- [워크플로우 구축](#워크플로우-구축)
+- [고급 활용 팁](#고급-활용-팁)
+- [문제 해결](#문제-해결)
+- [결론](#결론)
+
+## 시스템 개요
+
+이 가이드에서는 매월 자동으로 최신 한국 부동산 정책을 심층 리서치하여 구조화된 데이터로 저장하고, 이메일로 받아볼 수 있는 시스템을 구축합니다.
+
+### 워크플로우 구조
+
+![워크플로우 구조](./n8n_Source/13/2.%20WF.png)
+
+1. **스케줄 트리거 (매월)** → 2. **AI Agent 부동산 정책 리서치** → 3. **Airtable 결과 저장** → 4. **Gmail 메일 자동 발송**
+
+### 주요 기능
+
+- 매월 1회 자동 실행
+- Perplexity Deep Research를 활용한 심층 리서치
+- AI Agent가 자율적으로 한국 부동산 정책 분석
+- 3~5개의 핵심 정책 변화 자동 추출
+- 매수/매도 방향성 분석
+- 구조화된 JSON 형식 출력 (headline, research, sources)
+- Airtable에 리서치 결과 자동 저장
+- Gmail로 리서치 결과 자동 발송
+- Buffer Window Memory로 이전 리서치 기억
+
+## 사전 준비사항
+
+- n8n 설치 및 실행 (Self-hosted 또는 Cloud)
+- OpenAI API 키 (GPT-4.1-mini 사용)
+- Perplexity API 키 (Deep Research 기능 사용)
+- Airtable 계정 및 Personal Access Token
+- Gmail 계정 및 OAuth2 인증
+
+## 워크플로우 구축
+
+### 1. 스케줄 트리거 설정
+
+1. **Schedule Trigger 노드 추가**
+2. **실행 주기 설정**:
+   - Rule: 'Every Month'
+   - Interval: 1 month
+
+이렇게 설정하면 매월 1일에 자동으로 워크플로우가 실행됩니다.
+
+### 2. AI Agent 부동산 정책 리서치 설정
+
+#### 2.1 AI Agent 노드 추가
+
+1. **AI Agent 노드 추가**
+2. **Prompt Type**: Define Below
+3. **Text**: `한국 부동산 정책/규제 리서치를 해줘`
+
+#### 2.2 Chat Model 연결 (OpenAI)
+
+1. **OpenAI Chat Model 서브노드 추가**
+2. **모델 설정**:
+   - Model: **gpt-4.1-mini** (비용 효율적이면서 강력한 성능)
+   - Temperature: 기본값 사용
+
+**System Message** (핵심 프롬프트):
+```
+You are a meticulous **Korean Real-Estate Policy Research Agent**.  
+Your only external capability is the **"Research" tool** (returns excerpts + URLs).
+
+TASK
+1. Identify the **3-5 most consequential Korean real-estate policy / regulatory actions or proposals** announced or advanced within the last 30 days.  
+   • Today is {{ $today.format('yyyy-MM-dd') }}  
+2. Analyse how each item could **alter buy/hold/sell decisions** for residential property over the next 6-12 months.
+
+────────────────────────────────────────
+INFORMATION-GATHERING RULES (EN)
+• Make exactly ONE (1) Research call.
+• Build one Korean query in this pattern:
+    "부동산 정책" OR "대출 규제" OR "주택 공급" OR
+    "세금 개편" OR "임대차3법" OR "전세사기 방지" OR
+    "투기과열지구" OR "분양가 상한제" OR
+    "재건축 규제" OR "공시가격"
+예시 최종 문자열  
+• Extract **more than 10 distinct Korean sources** (정부·국회·경제지·전문 언론).  
+
+────────────────────────────────────────
+ANALYSIS & SYNTHESIS RULES
+• Cross-check facts; flag discrepancies.  
+• For each 정책/규제, classify:  
+  – **Impact strength:** High / Medium / Low  
+  – **Buy/Sell direction:** Buy ↑ / Sell ↑ / Mixed / Neutral  
+• Prioritise items by expected market effect.
+
+────────────────────────────────────────
+OUTPUT **JSON** — EXACT SHAPE REQUIRED
+Return **nothing except** a single JSON object with three string fields:
+
+{
+  "headline": "<HEADLINE>",
+  "research": "<MARKDOWN_BODY>",
+  "sources": "<NUMBERED_SOURCE_LIST>"
+}
+
+<HEADLINE>
+<전체 리서치 내용에 대한 헤드라인 한줄>
+
+<MARKDOWN_BODY> (한국어·불릿 포맷)
+
+# 최근 한국 부동산 정책·규제 브리핑  
+_Last updated: <YYYY-MM-DD>_
+
+## 요약 한줄
+<가장 영향력 높은 변화 요약>
+
+## 정책별 상세 분석
+- **정책·규제:** <이름>  
+  • **시행/진행 단계:** 국회 통과 / 시행령 발표 / 입법예고 등  
+  • **영향 강도:** High / Medium / Low  
+  • **매수·매도 방향:** Buy ↑ / Sell ↑ / Mixed / Neutral  
+  • **영향 시점:** 즉시 / 3–6M / >6M  
+  • **근거:** (see #3)  
+  • **요약 설명:** 1-2문장으로 핵심 메커니즘
+
+- **정책·규제:** <이름>  
+  • … (위와 동일 형식 반복)
+
+### 추가 설명
+- **시장 메커니즘:** 금리·세제·대출 규제 변화가 수요·공급에 미치는 구체적 경로(2–3문단)
+- **지역·자산군 차별화:** 강남 vs 지방, 아파트 vs 오피스텔 등
+
+## 투자자 체크리스트
+- **매수 고려 요인:** …  
+- **매도 고려 요인:** …  
+
+<NUMBERED_SOURCE_LIST>
+1. [제목] – URL  
+2. …  
+
+*(인라인 인용 예: "…전세보증보험 의무화 확대 (see #2)")*
+
+────────────────────────────────────────
+STYLE GUIDE (한국어)
+• 1,500–2,000 단어 내외  
+• 법·세제·금융 용어는 원어 그대로 유지(LTV, DSR 등)  
+• 수치·인용 임의 생성 금지, 불확실하면 "n/a"
+```
+
+#### 2.3 Memory 연결 (Buffer Window Memory)
+
+1. **Window Buffer Memory 서브노드 추가**
+2. **설정**:
+   - Session ID Type: Custom Key
+   - Session Key: `scheduled_research_session`
+
+이 설정으로 매월 리서치 시 이전 내용을 기억하여 중복을 방지하고 트렌드를 추적할 수 있습니다.
+
+#### 2.4 Research Tool 연결 (Perplexity)
+
+1. **Perplexity Tool 서브노드 추가**
+2. **API 설정**:
+   - Model: **sonar-deep-research** (심층 리서치 전용 모델)
+   - Search Recency: month (최근 1개월 데이터)
+
+**Tool 설명**:
+```
+Use this tool to perform deep web research on Korean real estate policies.
+Searches multiple sources and provides citation-backed results with URL references.
+Focus on government announcements, regulatory changes, and market impacts.
+```
+
+#### 2.5 Output Parser 연결 (Structured Output Parser)
+
+1. **Structured Output Parser 서브노드 추가**
+2. **JSON Schema Example**:
+
+```json
+{
+  "headline": "대출 풀고 공급 늘린 2025 상반기… 수도권 매수·매도 균형, 미세 흔들림",
+  "research": "# 최근 한국 부동산 정책·규제 브리핑  \n_Last updated: 2025-07-08_\n\n## 요약 한줄\n2025년 상반기, 대출규제 일부 완화와 신규 주택공급 확대, 전세사기 방지 등 굵직한 제도 변화가 모색·시행되면서 서울 및 수도권을 중심으로 매수-매도 균형이 미세하게 흔들리고 있습니다.\n\n## 정책별 상세 분석\n\n---\n\n- **정책·규제:** LTV·DSR 규제 일부 완화와 특례보금자리론 지속  \n  • **시행/진행 단계:** 2025년 상반기 정부 발표, 금융기관 적용 중  \n  • **영향 강도:** High  \n  • **매수·매도 방향:** Buy Pressure ↑  \n  • **영향 시점:** 즉시 ~ 3–6M  \n  • **근거:** (see #2, #6, #8, #18)  \n  • **요약 설명:** 실수요자의 LTV(주택담보인정비율) 상향(최대 80~90%)과 DSR(총부채원리금상환비율) 일부 예외 적용, 특례보금자리론 유지로 중·저가 주택 및 생애최초 구매자 중심 매수 여건 개선, 청년 및 신혼부부 대출부담도 단기간 완화.\n\n---\n\n- **정책·규제:** 신규 4세대 신도시 및 청년·신혼 서민 주택 특별공급 확대  \n  • **시행/진행 단계:** 2025년 정부 2.5백만호 공급계획, 공모 및 착공 본격화  \n  • **영향 강도:** High (중장기), 지역별 변동  \n  • **매수·매도 방향:** Mixed (공급지역 매도↑, 인접기성지구 단기매수↑)  \n  • **영향 시점:** 3–6M 및 >6M  \n  • **근거:** (see #1, #7, #19)  \n...",
+  "sources": "1. [부동산 공약, 무엇이 달라질까 - 2025년 새 정부 정책 정리](https://www.bank-mall.co.kr/plus/blog/12033)\n2. [주거사다리 걷어찬 대출 규제…\"실수요자 LTV·DSR 풀어야\"](https://www.newstomato.com/readnews.aspx?no=1260071)\n3. [부동산 세금 완벽 정리! (양도세, 취득세, 종부세 등)](https://aespa3535.tistory.com/entry/%EB%B6%80%EB%8F%99%EC%82%B0-%EC%84%B8%EA%B8%88-%EC%99%84%EB%B2%BD-%EC%A0%95%EB%A6%AC-%EC%96%91%EB%8F%84%EC%84%B8-%EC%B7%A8%EB%93%9D%EC%84%B8-%EC%A2%85%EB%B6%80%EC%84%B8-%EB%93%B1)\n4..."
+}
+```
+
+이 스키마는 AI Agent의 출력을 자동으로 파싱하여 구조화된 데이터로 변환합니다.
+
+### 3. Airtable 결과 저장
+
+1. **Airtable 노드 추가**
+2. **Operation**: Create a record
+
+**기본 설정**:
+- Base: Realestate-research (appCQ73phYybZqGy8)
+- Table: realestate-research (tblzhDM7a5NxdZwY4)
+
+**필드 매핑**:
+- Mapping Mode: Define Below
+- Columns:
+  ```
+  Headline: {{ $json.output.headline }}
+  Research: {{ $json.output.research }}
+  Source: {{ $json.output.sources }}
+  ```
+
+**Airtable 테이블 구조**:
+- **Headline** (Single line text): 리서치 헤드라인
+- **Date** (Date): 리서치 날짜 (자동 생성)
+- **Research** (Long text): 전체 리서치 내용 (Markdown)
+- **Source** (Long text): 출처 목록
+
+### 4. Gmail 메일 자동 발송
+
+1. **Gmail 노드 추가**
+2. **Operation**: Send a message
+
+**이메일 설정**:
+- Send To: `coree2k@gmail.com` (본인 이메일로 변경)
+- Subject: `{{ $json.fields.Headline }}`
+- Message: 
+  ```
+  {{ $json.fields.Research }}
+  
+  {{ $json.fields.Source }}
+  ```
+
+**Gmail OAuth2 인증**:
+1. Gmail 계정 연결
+2. OAuth2 인증 완료
+3. 메일 전송 권한 승인
+
+## 출력 예시
+
+### Headline
+```
+대출 풀고 공급 늘린 2025 상반기… 수도권 매수·매도 균형, 미세 흔들림
+```
+
+### Research (Markdown 형식)
+```markdown
+# 최근 한국 부동산 정책·규제 브리핑  
+_Last updated: 2025-07-08_
+
+## 요약 한줄
+2025년 상반기, 대출규제 일부 완화와 신규 주택공급 확대, 전세사기 방지 등 굵직한 제도 변화가 모색·시행되면서 서울 및 수도권을 중심으로 매수-매도 균형이 미세하게 흔들리고 있습니다.
+
+## 정책별 상세 분석
+
+---
+
+- **정책·규제:** LTV·DSR 규제 일부 완화와 특례보금자리론 지속  
+  • **시행/진행 단계:** 2025년 상반기 정부 발표, 금융기관 적용 중  
+  • **영향 강도:** High  
+  • **매수·매도 방향:** Buy Pressure ↑  
+  • **영향 시점:** 즉시 ~ 3–6M  
+  • **근거:** (see #2, #6, #8, #18)  
+  • **요약 설명:** 실수요자의 LTV 상향과 DSR 예외 적용으로 매수 여건 개선
+
+---
+
+- **정책·규제:** 신규 4세대 신도시 및 청년·신혼 서민 주택 특별공급 확대  
+  • **시행/진행 단계:** 2025년 정부 2.5백만호 공급계획, 공모 및 착공 본격화  
+  • **영향 강도:** High (중장기)  
+  • **매수·매도 방향:** Mixed  
+  • **영향 시점:** 3–6M 및 >6M  
+  • **근거:** (see #1, #7, #19)
+
+## 투자자 체크리스트
+- **매수 고려 요인:** LTV 완화로 실수요 매수력 증가
+- **매도 고려 요인:** 신규 공급 확대로 장기 가격 압박 가능성
+```
+
+### Sources
+```
+1. [부동산 공약, 무엇이 달라질까](https://www.bank-mall.co.kr/plus/blog/12033)
+2. [주거사다리 걷어찬 대출 규제](https://www.newstomato.com/readnews.aspx?no=1260071)
+3. [부동산 세금 완벽 정리](https://aespa3535.tistory.com/entry/...)
+```
+
+## 고급 활용 팁
+
+### 1. 실행 주기 조정
+
+매월이 아닌 다른 주기로 실행하려면:
+
+**격주 실행**:
+```
+Rule: Every 2 weeks
+```
+
+**매주 실행**:
+```
+Rule: Every week
+Day: Monday
+Hour: 9
+```
+
+### 2. 특정 지역 집중 리서치
+
+특정 지역에 집중하려면 User Prompt를 수정:
+
+```
+한국 부동산 정책/규제 리서치를 해줘. 
+특히 서울 강남권과 수도권 신도시 지역에 집중해서 분석해줘.
+```
+
+### 3. 슬랙 알림 추가
+
+Gmail 외에 Slack으로도 알림을 받으려면:
+
+1. **Slack 노드 추가** (Gmail 노드와 병렬 연결)
+2. **Channel**: #real-estate-updates
+3. **Message**:
+```
+🏠 *{{ $('Create a record').item.json.fields.Headline }}*
+
+{{ $('Create a record').item.json.fields.Research.substring(0, 500) }}...
+
+📊 전체 리포트: [Airtable에서 확인]
+```
+
+### 4. 조건부 알림 (중요도 필터링)
+
+특정 키워드가 있을 때만 알림:
+
+1. **IF 노드 추가** (Create a record와 Send a message 사이)
+2. **Condition**:
+```javascript
+{{ $json.fields.Research.toLowerCase().includes('금리') || 
+   $json.fields.Research.toLowerCase().includes('대출') || 
+   $json.fields.Research.toLowerCase().includes('세금') }}
+```
+
+### 5. 리서치 비교 분석
+
+이전 달 리서치와 비교하려면:
+
+1. **Airtable 노드** 추가 (조회용)
+2. **Filter**: 최근 2개월 데이터 조회
+3. **Code 노드**로 변화 추이 분석
+4. 비교 결과를 이메일에 포함
+
+### 6. PDF 리포트 자동 생성
+
+구조화된 PDF 리포트를 생성하려면:
+
+1. **HTTP Request 노드**로 HTML to PDF API 호출
+2. Markdown을 HTML로 변환
+3. Google Drive에 자동 저장
+
+## 문제 해결
+
+### 자주 발생하는 문제들
+
+#### 1. Perplexity API 할당량 초과
+
+**증상**: Research 실패, API limit 에러
+**해결책**:
+- Perplexity 대시보드에서 크레딧 확인
+- 월간 실행으로 제한하여 사용량 절약
+- 필요시 Pro 플랜으로 업그레이드
+
+#### 2. JSON 파싱 에러
+
+**증상**: Structured Output Parser에서 에러 발생
+**해결책**:
+- System Message에서 JSON 형식 출력 강조:
+```
+CRITICAL: Return ONLY valid JSON. No markdown, no explanations, just JSON.
+```
+- Temperature를 낮춰서 일관성 향상 (0.3-0.5 권장)
+- Output Parser 스키마가 정확한지 확인
+
+#### 3. 메모리 컨텍스트 충돌
+
+**증상**: 이전 리서치 내용이 현재 결과에 혼재
+**해결책**:
+- Session Key를 월별로 변경:
+```
+session_key: research_{{ $now.format('YYYY-MM') }}
+```
+- 또는 매 실행 시 메모리 초기화
+
+#### 4. Airtable 필드 매핑 오류
+
+**증상**: 데이터가 Airtable에 저장되지 않음
+**해결책**:
+- Airtable 테이블 스키마 확인
+- 필드명이 정확히 일치하는지 확인
+- `{{ $json.output.headline }}` 경로가 올바른지 확인
+
+#### 5. Gmail 발송 실패
+
+**증상**: OAuth2 인증 에러
+**해결책**:
+- Gmail OAuth2 재인증
+- Google Cloud Console에서 OAuth 동의 화면 확인
+- Gmail API가 활성화되어 있는지 확인
+
+#### 6. Perplexity 검색 결과 부족
+
+**증상**: 최신 정보를 찾지 못함
+**해결책**:
+- Search Recency를 'week'로 변경하여 더 최신 정보 검색
+- 검색 쿼리를 더 구체적으로 작성
+- 한국어 키워드 조합 최적화
+
+### 성능 최적화
+
+#### 비용 절감 팁
+1. **gpt-4.1-mini 사용**: GPT-4 대비 1/10 비용으로 유사한 성능
+2. **월간 실행**: API 호출 최소화
+3. **Perplexity Deep Research**: 일반 검색 대비 정확도 높음
+
+#### 실행 시간 단축
+1. **Timeout 설정**: Perplexity Tool에서 적절한 timeout 설정
+2. **불필요한 노드 제거**: 디버깅용 노드는 삭제
+3. **병렬 처리**: Airtable 저장과 Gmail 발송을 병렬로 실행 불가 (순차 필요)
+
+## 확장 아이디어
+
+### 1. 다중 지역 리서치
+
+여러 지역을 동시에 분석:
+- 서울, 경기, 부산, 대구 등 각 지역별 AI Agent 실행
+- Split In Batches 노드로 지역 리스트 순회
+- 각 지역별 Airtable 레코드 생성
+
+### 2. 시각화 대시보드
+
+리서치 결과를 시각화:
+- Airtable을 Google Data Studio와 연동
+- 월별 정책 변화 추이 그래프
+- 매수/매도 방향성 히트맵
+
+### 3. 투자 추천 시스템
+
+AI가 투자 기회를 분석:
+- 정책 변화에 따른 투자 추천 생성
+- 위험도 평가 (High/Medium/Low)
+- 예상 수익률 계산
+
+### 4. 웹훅 트리거 추가
+
+수동 실행을 위한 웹훅:
+- Webhook Trigger 노드 추가
+- URL로 수동 실행 가능
+- Slack 명령어로 트리거
+
+### 5. 멀티 소스 리서치
+
+Perplexity 외 추가 소스:
+- 네이버 부동산 API
+- 국토교통부 실거래가 API
+- 한국은행 금리 데이터
+- 각 소스를 AI Agent에 Tool로 추가
+
+## 실제 활용 사례
+
+### 개인 투자자
+- 매월 정책 변화를 자동으로 파악
+- 투자 타이밍 결정에 활용
+- 10+ 출처의 정보를 한 번에 요약
+
+### 부동산 중개인
+- 고객 상담 자료로 활용
+- 최신 정책 트렌드 파악
+- 신뢰도 높은 출처 기반 상담
+
+### 정책 분석가
+- 정책 변화 모니터링
+- 시장 영향 분석
+- 월간 리포트 자동 생성
+
+## 결론
+
+n8n의 AI Agent와 Perplexity Deep Search를 활용하면 전문가 수준의 부동산 리서치를 완전 자동화할 수 있습니다.
+
+### 핵심 장점
+
+1. **완전 자동화**: 매월 1회 자동 실행, 별도 관리 불필요
+2. **심층 분석**: Perplexity Deep Research로 10+ 출처 교차 검증
+3. **구조화된 데이터**: JSON 형식으로 일관된 품질 유지
+4. **즉시 활용**: 이메일로 받아서 바로 읽기 가능
+5. **비용 효율**: GPT-4.1-mini 사용으로 월 $1-2 수준
+
+### 이 시스템의 가치
+
+- **시간 절약**: 매월 5-10시간의 리서치 시간 절약
+- **정확성**: 다중 소스 검증으로 신뢰도 향상
+- **일관성**: 매월 동일한 형식과 품질 보장
+- **확장성**: 다른 산업, 지역으로 쉽게 확장 가능
+
+### 다음 단계
+
+이 시스템을 기반으로:
+
+1. **다른 산업 적용**: 주식, 암호화폐, 기술 트렌드 등
+2. **예측 모델 추가**: 과거 데이터 기반 가격 예측
+3. **알림 고도화**: 중요도별 알림, 특정 키워드 필터링
+4. **대시보드 구축**: Airtable + Google Data Studio 연동
+
+n8n의 강력한 자동화 기능과 최신 AI 기술을 결합하면, 누구나 전문가 수준의 인사이트를 자동으로 얻을 수 있습니다. 여러분만의 리서치 워크플로우를 구축해보세요!
+
+## 워크플로우 JSON
+
+전체 워크플로우를 가져오려면 아래 JSON을 n8n에 import하세요:
+
+**워크플로우 이름**: `[Fin] [월간] 부동산 정책 리서치 Agent (Perplexity)`
+
+주요 구성:
+- Schedule Trigger (매월 실행)
+- AI Agent (한국 부동산 정책 리서치)
+  - OpenAI Chat Model (gpt-4.1-mini)
+  - Window Buffer Memory (세션 기억)
+  - Perplexity Tool (sonar-deep-research)
+  - Structured Output Parser (JSON 파싱)
+- Airtable (결과 저장)
+- Gmail (자동 발송)
+
+## 참고 자료
+
+### 공식 문서
+- [n8n 공식 문서](https://docs.n8n.io/)
+- [n8n AI Agent 가이드](https://docs.n8n.io/integrations/builtin/cluster-nodes/root-nodes/n8n-nodes-langchain.agent/)
+- [OpenAI API 문서](https://platform.openai.com/docs)
+- [Perplexity API 문서](https://docs.perplexity.ai/)
+- [Airtable API 문서](https://airtable.com/developers/web/api/introduction)
+- [Gmail API 문서](https://developers.google.com/gmail/api)
+
+### 커뮤니티
+- [n8n 커뮤니티 포럼](https://community.n8n.io/)
+- [n8n Discord](https://discord.gg/n8n)
+- [n8n Reddit](https://www.reddit.com/r/n8n/)
+
+### 관련 가이드
+- [n8n AI Starter Kit](https://docs.n8n.io/advanced-ai/)
+- [LangChain 통합 가이드](https://docs.n8n.io/integrations/builtin/cluster-nodes/root-nodes/n8n-nodes-langchain/)
+- [Perplexity Tool 사용법](https://docs.n8n.io/integrations/builtin/cluster-nodes/sub-nodes/n8n-nodes-langchain.toolperplexity/)
+
+### 한국어 리소스
+- [부동산 정책 정보 - 국토교통부](https://www.molit.go.kr/)
+- [주택도시기금 - HF](https://www.hf.go.kr/)
+- [한국부동산원](https://www.reb.or.kr/)
+
+---
+
+## FAQ
+
+### Q1. 왜 매월 1회만 실행하나요?
+**A**: 부동산 정책은 빠르게 변하지 않으므로 매월 1회면 충분합니다. 더 자주 실행하면 API 비용이 증가하고 중복 정보가 많아집니다.
+
+### Q2. GPT-4.1-mini와 GPT-4의 차이는?
+**A**: GPT-4.1-mini는 GPT-4 대비:
+- 비용이 약 1/10 수준
+- 속도가 2-3배 빠름
+- 리서치 요약 작업에 충분한 성능
+- 복잡한 추론이 필요하면 GPT-4 사용 권장
+
+### Q3. Perplexity Deep Research가 뭔가요?
+**A**: Perplexity의 sonar-deep-research 모델은:
+- 여러 웹 소스를 자동으로 검색
+- 교차 검증된 정보 제공
+- URL 출처 자동 포함
+- 일반 검색보다 정확하고 신뢰도 높음
+
+### Q4. Airtable 대신 다른 DB를 사용할 수 있나요?
+**A**: 네, 다음으로 대체 가능합니다:
+- Google Sheets (무료, 쉬운 연동)
+- Notion Database (시각화 우수)
+- PostgreSQL (대용량 데이터)
+- MongoDB (유연한 스키마)
+
+### Q5. 이메일 형식을 HTML로 바꿀 수 있나요?
+**A**: 네, Gmail 노드에서:
+1. Options > Format 선택
+2. HTML로 변경
+3. Markdown을 HTML로 변환하는 Code 노드 추가
+
+### Q6. 여러 사람에게 발송하려면?
+**A**: Send To 필드에 쉼표로 구분:
+```
+email1@example.com, email2@example.com, email3@example.com
+```
+
+### Q7. 비용은 얼마나 드나요?
+**A**: 월간 예상 비용:
+- OpenAI API (gpt-4.1-mini): $0.50-1.00
+- Perplexity API: $1.00-2.00
+- Airtable: 무료 (1,200 records까지)
+- n8n: 무료 (Self-hosted) 또는 $20/월 (Cloud)
+- **총 월 비용**: $1.50-3.00 (API만) 또는 $21.50-23.00 (n8n Cloud 포함)
+
+### Q8. 실행 실패 시 알림 받을 수 있나요?
+**A**: 네, n8n 설정에서:
+1. Workflow Settings > Error Workflow
+2. 에러 발생 시 Slack/Email 알림 설정
+3. 또는 Error Trigger 노드로 별도 워크플로우 구성
+
+### Q9. 리서치 품질을 높이려면?
+**A**: 다음 방법들을 시도하세요:
+- System Prompt를 더 구체적으로 작성
+- Perplexity 검색 쿼리 최적화
+- Temperature 낮추기 (0.3-0.5)
+- 출처 개수 늘리기 (15-20개)
+- 검증 단계 추가 (Code 노드로 팩트 체크)
+
+### Q10. 다른 국가 부동산도 가능한가요?
+**A**: 네, System Prompt만 수정하면 됩니다:
+- 미국: "US real estate policy"
+- 일본: "日本 不動産政策"
+- 영국: "UK housing policy"
+
+---
+
+## 버전 히스토리
+
+### v1.0.0 (2025-01-15)
+- 초기 워크플로우 구축
+- AI Agent + Perplexity Deep Research 통합
+- Airtable 저장 및 Gmail 발송 기능
+- Buffer Window Memory 추가
+
+### 향후 업데이트 예정
+- [ ] HTML 이메일 템플릿
+- [ ] 슬랙 알림 통합
+- [ ] 히스토리 비교 분석
+- [ ] PDF 리포트 생성
+- [ ] 대시보드 시각화
+
+---
+
+## 라이선스 및 면책사항
+
+### 사용 조건
+- 이 워크플로우는 교육 및 개인 사용 목적으로 제공됩니다
+- 상업적 사용 시 각 API의 이용약관을 확인하세요
+- AI 생성 콘텐츠이므로 정보의 정확성을 직접 확인해야 합니다
+
+### 면책사항
+- 이 시스템의 리서치 결과는 참고용이며 투자 조언이 아닙니다
+- 부동산 투자 결정 전 반드시 전문가와 상담하세요
+- API 비용은 사용량에 따라 달라질 수 있습니다
+- 정책 정보의 정확성은 출처에 따라 달라질 수 있습니다
+
+---
+
+## 기여하기
+
+이 가이드를 개선하고 싶으시다면:
+1. 이슈나 개선 제안을 GitHub에 등록해주세요
+2. 더 나은 프롬프트나 설정을 공유해주세요
+3. 성공 사례나 문제 해결 경험을 공유해주세요
+
+---
+
+## 감사의 말
+
+이 워크플로우는 다음 기술들 덕분에 가능했습니다:
+- **n8n**: 강력한 워크플로우 자동화 플랫폼
+- **OpenAI**: GPT-4.1-mini 언어 모델
+- **Perplexity**: Deep Research 검색 기술
+- **Airtable**: 유연한 데이터베이스
+- **Gmail**: 안정적인 이메일 서비스
+
+---
+
+**버전**: 1.0.0  
+**최종 업데이트**: 2025-01-15  
+**작성자**: Real Estate Automation Team  
+**문의**: [Issues on GitHub]
+
+---
+
+## 부록: 전체 프롬프트 템플릿
+
+### System Prompt (전체 버전)
+
+```
+You are a meticulous **Korean Real-Estate Policy Research Agent**.  
+Your only external capability is the **"Research" tool** (returns excerpts + URLs).
+
+TASK
+1. Identify the **3-5 most consequential Korean real-estate policy / regulatory actions or proposals** announced or advanced within the last 30 days.  
+   • Today is {{ $today.format('yyyy-MM-dd') }}  
+2. Analyse how each item could **alter buy/hold/sell decisions** for residential property over the next 6-12 months.
+
+────────────────────────────────────────
+INFORMATION-GATHERING RULES (EN)
+• Make exactly ONE (1) Research call.
+• Build one Korean query in this pattern:
+    "부동산 정책" OR "대출 규제" OR "주택 공급" OR
+    "세금 개편" OR "임대차3법" OR "전세사기 방지" OR
+    "투기과열지구" OR "분양가 상한제" OR
+    "재건축 규제" OR "공시가격"
+• Extract **more than 10 distinct Korean sources** (정부·국회·경제지·전문 언론).  
+
+────────────────────────────────────────
+ANALYSIS & SYNTHESIS RULES
+• Cross-check facts; flag discrepancies.  
+• For each 정책/규제, classify:  
+  – **Impact strength:** High / Medium / Low  
+  – **Buy/Sell direction:** Buy ↑ / Sell ↑ / Mixed / Neutral  
+• Prioritise items by expected market effect.
+
+────────────────────────────────────────
+OUTPUT **JSON** — EXACT SHAPE REQUIRED
+Return **nothing except** a single JSON object with three string fields:
+
+{
+  "headline": "<HEADLINE>",
+  "research": "<MARKDOWN_BODY>",
+  "sources": "<NUMBERED_SOURCE_LIST>"
+}
+
+<HEADLINE>
+<전체 리서치 내용에 대한 헤드라인 한줄>
+
+<MARKDOWN_BODY> (한국어·불릿 포맷)
+
+# 최근 한국 부동산 정책·규제 브리핑  
+_Last updated: <YYYY-MM-DD>_
+
+## 요약 한줄
+<가장 영향력 높은 변화 요약>
+
+## 정책별 상세 분석
+- **정책·규제:** <이름>  
+  • **시행/진행 단계:** 국회 통과 / 시행령 발표 / 입법예고 등  
+  • **영향 강도:** High / Medium / Low  
+  • **매수·매도 방향:** Buy ↑ / Sell ↑ / Mixed / Neutral  
+  • **영향 시점:** 즉시 / 3–6M / >6M  
+  • **근거:** (see #3)  
+  • **요약 설명:** 1-2문장으로 핵심 메커니즘
+
+- **정책·규제:** <이름>  
+  • … (위와 동일 형식 반복)
+
+### 추가 설명
+- **시장 메커니즘:** 금리·세제·대출 규제 변화가 수요·공급에 미치는 구체적 경로(2–3문단)
+- **지역·자산군 차별화:** 강남 vs 지방, 아파트 vs 오피스텔 등
+
+## 투자자 체크리스트
+- **매수 고려 요인:** …  
+- **매도 고려 요인:** …  
+
+<NUMBERED_SOURCE_LIST>
+1. [제목] – URL  
+2. …  
+
+*(인라인 인용 예: "…전세보증보험 의무화 확대 (see #2)")*
+
+────────────────────────────────────────
+STYLE GUIDE (한국어)
+• 1,500–2,000 단어 내외  
+• 법·세제·금융 용어는 원어 그대로 유지(LTV, DSR 등)  
+• 수치·인용 임의 생성 금지, 불확실하면 "n/a"
+```
+
+### 사용자 프롬프트 예시
+
+```
+한국 부동산 정책/규제 리서치를 해줘
+```
+
+---
+
+이것으로 완전한 가이드가 완성되었습니다! 🎉
