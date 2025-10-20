@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+
+<!-- anti-inspection -->
+<script>
+(function(){
+  document.addEventListener('contextmenu', e => e.preventDefault(), {capture:true});
+  document.addEventListener('keydown', (e) => {
+    const k = (e.key||'').toLowerCase();
+    if ((e.ctrlKey && (k === 'u' || k === 's' || k === 'p')) ||
+        (e.ctrlKey && e.shiftKey && (k === 'i' || k === 'j' || k === 'c')) ||
+        (k === 'f12')) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, {capture:true});
+})();
+</script>
+
+
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Documentation - Cafe24</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+  <style>
+    body { margin: 0; padding: 0; font-family: 'Pretendard', sans-serif; }
+    .prose h1 { font-size: 2rem; font-weight: 700; margin-bottom: 1rem; border-bottom: 1px solid #e5e7eb; padding-bottom: 0.5rem; }
+    .prose h2 { font-size: 1.5rem; font-weight: 600; margin-top: 2rem; margin-bottom: 1rem; }
+    .prose h3 { font-size: 1.25rem; font-weight: 600; margin-top: 1.5rem; margin-bottom: 0.75rem; }
+    .prose p { margin-bottom: 1rem; line-height: 1.7; }
+    .prose ul { margin-left: 1.5rem; margin-bottom: 1rem; }
+    .prose li { margin-bottom: 0.5rem; line-height: 1.7; }
+    .prose code { background: #f6f8fa; padding: 0.2rem 0.4rem; border-radius: 3px; font-size: 0.9em; }
+    .sidebar-link { transition: all 0.2s; }
+    .sidebar-link:hover { background: #f3f4f6; }
+    .sidebar-link.active { background: #e0e7ff; color: #4f46e5; font-weight: 600; }
+    .sidebar-scroll::-webkit-scrollbar { width: 4px; }
+    .sidebar-scroll::-webkit-scrollbar-track { background: white; }
+    .sidebar-scroll::-webkit-scrollbar-thumb { background: #e5e7eb; border-radius: 2px; }
+    .toast { position: fixed; top: 20px; right: 20px; background: #10b981; color: white; padding: 12px 20px; border-radius: 8px; z-index: 1000; animation: slideIn 0.3s; }
+    .toast.error { background: #ef4444; }
+    @keyframes slideIn { from { transform: translateX(400px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+  </style>
+
+  <script>
+  async function hashText(text) {
+    const enc = new TextEncoder().encode(text);
+    const digest = await crypto.subtle.digest('SHA-256', enc);
+    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2,'0')).join('');
+  }
+  // Basic hardening: block right-click and common devtool shortcuts
+  document.addEventListener('contextmenu', e => e.preventDefault());
+  document.addEventListener('keydown', (e) => {
+    const k = e.key.toLowerCase();
+    if ((e.ctrlKey && (k === 'u' || k === 's' || k === 'p')) ||
+        (e.ctrlKey && e.shiftKey && (k === 'i' || k === 'j' || k === 'c')) ||
+        (k === 'f12')) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, {capture:true});
+  </script>
+
+</head>
+<body>
+  <div id="app"></div>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script>
+    (function enforceEntry() {
+      const auth = localStorage.getItem('authUser');
+      const fromLanding = sessionStorage.getItem('fromLanding');
+      if (!auth || !fromLanding) {
+        window.location.replace('./hosting_index.html');
+        return;
+      }
+      sessionStorage.removeItem('fromLanding');
+    })();
+
+    function getRole() {
+      try { 
+        const u = JSON.parse(localStorage.getItem('authUser')); 
+        return u?.role || 'guest'; 
+      } catch { 
+        return 'guest'; 
+      }
+    }
+
+    const API_URL = './api';
+    const ADMIN_PASSWORD_HASH = '13a95c75b44f95ead23f47f0bf10667e57b44ec5150180c8a39a39361cf56169';
+    const ROLE = getRole();
+const CAN_EDIT = (ROLE === 'admin');
+const { useState, useEffect, useRef, createElement: e } = React;
+
+    function App() {
+      const [agents] = useState([
+        { id: 1, name: 'Google Calendar Agent (Chat UI Simple Ver.)', category: '자동화', chatUrl: 'https://webhook-processor-production-c43b.up.railway.app/webhook/6e3bb6d1-3459-46b6-a6fa-be390e30be73/chat', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/58JFFctylNtBwgxs', description: '# Google Calendar Agent\n\nGoogle Calendar와 연동되는 AI Agent입니다.' },
+        { id: 2, name: 'Receipt 접수 Agent (OCR)', category: 'OCR', chatUrl: './receipt_upload/receIpt_submit.html', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/jLzVrDMhy0eoRrKB', description: '# Receipt 접수 Agent\n\nOCR 기반 영수증 처리 자동화 Agent입니다.' },
+        { id: 3, name: 'AI RAG Agent 3종 Set (동반성장지수 평가기준, 사규)', category: 'RAG', description: '# AI RAG Agent\n\n내부 문서 RAG 기반 검색·응답 Agent입니다.', subMenus: [
+          { id: '3-1', name: 'Advanced RAG AI Agent (Rerank Ver.) (동반위)', chatUrl: 'https://webhook-processor-production-c43b.up.railway.app/webhook/4924cfa7-2afc-4009-adfd-8be3a30cc672/chat', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/aNjTSzF8nvdWs9gl' },
+          { id: '3-2', name: 'Advanced RAG AI Agent (Rerank Ver.) (공정위)', chatUrl: 'https://webhook-processor-production-c43b.up.railway.app/webhook/2fbc1bfb-db95-467b-af79-e68732edb97e/chat', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/2DY9xbhukJgrHnSl' },
+          { id: '3-3', name: 'Naive RAG AI Agent (supabase DB Ver.) (사규)', chatUrl: 'https://webhook-processor-production-c43b.up.railway.app/webhook/e33908cb-6d23-4fd8-a297-7c7e46e32d72/chat', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/QNNGdhGib72yzoJ9' }
+        ]},
+        { id: 4, name: 'Advanced RAG AI Agent (사규)\n(Reranker,qdrant DB Ver.)', category: 'RAG', chatUrl: 'https://webhook-processor-production-c43b.up.railway.app/webhook/1a3cc5eb-e593-4ad2-b24b-a24a7d2d0d29/chat', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/HzftZbX1mfF6YnlM', description: '# Advanced RAG AI Agent (사규)\n\nReranker 적용 고급 RAG Agent입니다.' },
+        { id: 5, name: '재무제표 분석 AI Agent', category: '분석', showN8nLogo: false, description: '# 재무제표 분석 AI Agent\n\n한국/미국 주식 및 재무제표 통합 분석 Agent입니다.', subMenus: [
+          { id: '5-1', name: '[한국/미국] 재무제표 분석 Multi-Agent', chatUrl: 'https://ai-test-lab2.slack.com/archives/C09H73Q2FUH', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/MyGFVoLUimCMmSmW', showN8nLogo: true },
+          { id: '5-2', name: '[미국] 재무제표 분석 Agent', chatUrl: 'https://ai-test-lab2.slack.com/archives/C09H73Q2FUH', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/947u9tbkDRhqKWPQ', showN8nLogo: true },
+          { id: '5-3', name: '[한국] 재무제표 분석 Agent', chatUrl: 'https://ai-test-lab2.slack.com/archives/C09H73Q2FUH', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/dHl5FkMqIGvogqVD', showN8nLogo: true }
+        ]},
+        { id: 6, name: '[월간] 공정위 하도급 정책 리서치 Agent (Perplexity)', category: '리서치', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/IrZvIiROfO0OjMku', description: '# [월간] 공정위 하도급 정책 리서치 Agent\n\n공정위 하도급 정책 월간 리서치 Agent입니다.' },
+        { id: 7, name: 'AI Newsletter Agent (긍정/부정 판단)', category: '분석', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/GFmSK9QGz6jTrWQF', description: '# AI Newsletter Agent\n\n뉴스 감성 분석 자동화 Agent입니다.' },
+        { id: 8, name: '[주간] Global AI 제품/서비스 리서치 Agent (Perplexity)', category: '리서치', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/N9WmXFiVCUj34YCf', description: '# [주간] Global AI 제품/서비스 리서치 Agent\n\n글로벌 AI 트렌드 주간 리서치 Agent입니다.' },
+        { id: 9, name: 'Slack/카카오톡 - Google 통합서비스 Multi-Agent', category: '자동화', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/1cEadTsGywL0GfXI', description: '# Slack/카카오톡 - Google 통합서비스 Multi-Agent\n\n메신저·Google 서비스 통합 자동화 Agent입니다.' },
+        { id: 10, name: '[마무리] RSS News Agent (Webhook,RSS Ver.)', category: '자동화', chatUrl: './news_card/news_rss.html', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/JuvOgiq42cUEJd0I', description: '# [마무리] RSS News Agent\n\nRSS 기반 뉴스 수집 자동화 Agent입니다.' },
+        { id: 11, name: '[월간] Finance 리서치 Agent (Perplexity)', category: '리서치', chatUrl: 'https://webhook-processor-production-c43b.up.railway.app/webhook/5da3f94f-28ec-4b9f-9002-5af1a4e77834/chat', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/2wc4Zt7KkYFlmAgi', description: '# [월간] Finance 리서치 Agent\n\n금융 시장 월간 리서치 Agent입니다.' },
+        { id: 12, name: 'ULTIMATE AI RAG Agent (Supabase DB Ver.)', category: 'RAG', chatUrl: 'https://webhook-processor-production-c43b.up.railway.app/webhook/e104e40e-6134-4825-a6f0-8a646d882662/chat', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/3dpEDID6hOFJdBCD', description: '# ULTIMATE AI RAG Agent\n\nSupabase 기반 최고급 RAG Agent입니다.' },
+        { id: 13, name: '[월간] 부동산 정책 리서치 Agent (Perplexity)', category: '리서치', n8nUrl: 'https://primary-production-41a5.up.railway.app/workflow/XHZD80WMDVO8KkZn', description: '# [월간] 부동산 정책 리서치 Agent\n\n부동산 정책 월간 리서치 Agent입니다.' }
+      ]);
+
+      const urlParams = new URLSearchParams(window.location.search);
+      const initialAgent = urlParams.get('agent') ? (isNaN(parseInt(urlParams.get('agent'))) ? urlParams.get('agent') : parseInt(urlParams.get('agent'))) : 1;
+
+      const [activeAgent, setActiveAgent] = useState(initialAgent);
+      const [editableContent, setEditableContent] = useState({});
+      const [isEditMode, setIsEditMode] = useState(false);
+      const [toast, setToast] = useState('');
+      const [expandedMenu, setExpandedMenu] = useState(null);
+      const [showChatInterface, setShowChatInterface] = useState(false);
+      const [searchQuery, setSearchQuery] = useState('');
+      const [sidebarWidth, setSidebarWidth] = useState(400);
+      const [isResizing, setIsResizing] = useState(false);
+      const autoSaveTimer = useRef(null);
+
+      useEffect(() => {
+        fetch(`${API_URL}/load.php?agentId=all`)
+          .then(r => r.json())
+          .then(data => setEditableContent(data))
+          .catch(() => setToast({ msg: '데이터 로드 실패', type: 'error' }));
+      }, []);
+
+      useEffect(() => {
+        if (isResizing) {
+          document.addEventListener('mousemove', handleMouseMove);
+          document.addEventListener('mouseup', handleMouseUp);
+        } else {
+          document.removeEventListener('mousemove', handleMouseMove);
+          document.removeEventListener('mouseup', handleMouseUp);
+        }
+        return () => {
+          document.removeEventListener('mousemove', handleMouseMove);
+          document.removeEventListener('mouseup', handleMouseUp);
+        };
+      }, [isResizing]);
+
+      const showToast = (msg, type = 'success') => {
+        setToast({ msg, type });
+        setTimeout(() => setToast(''), 3000);
+      };
+
+      const saveContent = async () => {
+        const res = await fetch(`${API_URL}/save.php`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agentId: String(activeAgent), content: editableContent[activeAgent] || '', password_hash: ADMIN_PASSWORD_HASH })
+        });
+        const result = await res.json();
+        if (result.success) {
+          showToast('✓ 저장 완료!');
+          setIsEditMode(false);
+        } else {
+          showToast('저장 실패: ' + result.error, 'error');
+        }
+      };
+
+      const updateContent = (newContent) => {
+        setEditableContent({ ...editableContent, [activeAgent]: newContent });
+        if (autoSaveTimer.current) clearTimeout(autoSaveTimer.current);
+        autoSaveTimer.current = setTimeout(() => {
+          fetch(`${API_URL}/save.php`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ agentId: String(activeAgent), content: newContent, password_hash: ADMIN_PASSWORD_HASH })
+          });
+        }, 3000);
+      };
+
+      const handleMouseMove = (ev) => {
+        if (isResizing) {
+          const newWidth = ev.clientX;
+          if (newWidth >= 240 && newWidth <= 600) {
+            setSidebarWidth(newWidth);
+          }
+        }
+      };
+
+      const handleMouseUp = () => setIsResizing(false);
+
+      const goToLanding = () => {
+        sessionStorage.setItem('fromLanding', 'true');
+        window.location.href = './hosting_index.html';
+      };
+
+      const getCurrentAgent = () => {
+        for (const agent of agents) {
+          if (agent.id === activeAgent) return agent;
+          if (agent.subMenus) {
+            const sub = agent.subMenus.find(s => s.id === activeAgent);
+            if (sub) return { ...sub, category: agent.category, showN8nLogo: sub.showN8nLogo !== undefined ? sub.showN8nLogo : agent.showN8nLogo };
+          }
+        }
+        return agents[0];
+      };
+
+      const currentAgent = getCurrentAgent();
+      const currentContent = editableContent[activeAgent] || currentAgent.description || '';
+      const filteredAgents = agents.filter(a => a.name.toLowerCase().includes(searchQuery.toLowerCase()));
+
+      return e('div', { className: 'flex h-screen' },
+        toast && e('div', { className: `toast ${toast.type === 'error' ? 'error' : ''}` }, toast.msg),
+        
+        e('aside', { className: 'border-r border-gray-200 flex flex-col bg-gray-50 relative', style: { width: `${sidebarWidth}px` } },
+          e('div', { className: 'p-4 border-b bg-white' },
+            e('div', { className: 'mb-3 flex justify-between items-center' },
+              e('a', { 
+                onClick: (ev) => { ev.preventDefault(); goToLanding(); },
+                href: '#',
+                className: 'text-sm font-semibold text-gray-700 hover:text-gray-900 cursor-pointer' 
+              }, '← 홈으로 돌아가기'),
+              e('span', { className: 'text-xs text-gray-500' }, ROLE === 'admin' ? '관리자 모드' : '일반 사용자')
+            ),
+            e('input', { 
+              type: 'text', 
+              placeholder: 'Search agents...', 
+              value: searchQuery, 
+              onChange: ev => setSearchQuery(ev.target.value), 
+              className: 'w-full px-3 py-2 border border-gray-300 rounded-md text-sm' 
+            })
+          ),
+          e('div', { className: 'flex-1 overflow-y-auto p-3 sidebar-scroll' },
+            e('div', { className: 'flex justify-between items-center mb-2 px-2' },
+              e('div', { className: 'text-xs font-semibold text-gray-500 uppercase' }, 'AI AGENTS'),
+              e('button', { 
+                onClick: () => setExpandedMenu(expandedMenu ? null : 'all'), 
+                className: 'px-2 py-1 bg-white hover:bg-gray-100 border border-gray-300 rounded text-xs font-semibold text-gray-600' 
+              }, expandedMenu ? '모두 닫기' : '모두 열기')
+            ),
+            filteredAgents.map(agent => e('div', { key: agent.id, className: 'mb-1' },
+              e('div', {
+                onClick: (ev) => { 
+                  ev.stopPropagation(); 
+                  setActiveAgent(agent.id); 
+                  if (agent.subMenus) {
+                    if (expandedMenu === 'all') {
+                      setExpandedMenu(agent.id);
+                    } else {
+                      setExpandedMenu(expandedMenu === agent.id ? null : agent.id);
+                    }
+                  }
+                },
+                className: `sidebar-link px-3 py-2 rounded-md cursor-pointer text-sm flex items-start gap-2 ${activeAgent === agent.id ? 'active' : 'text-gray-700'}`
+              },
+                e('img', { src: './image/n8n_logo.png', alt: 'n8n', className: 'w-5 h-5 mt-0.5 flex-shrink-0' }),
+                e('div', { className: 'flex-1' },
+                  e('div', { className: 'font-medium whitespace-pre-line' }, agent.name),
+                  e('div', { className: 'text-xs text-gray-500 mt-0.5' }, agent.category)
+                ),
+                agent.subMenus && e('div', { className: 'text-xs ml-2' }, 
+                  (expandedMenu === agent.id || expandedMenu === 'all') ? '▼' : '▶'
+                )
+              ),
+              agent.subMenus && (expandedMenu === agent.id || expandedMenu === 'all') && e('div', { className: 'ml-8 mt-1 space-y-1' },
+                agent.subMenus.map(sub => e('div', {
+                  key: sub.id,
+                  onClick: (ev) => { ev.stopPropagation(); setActiveAgent(sub.id); },
+                  className: `px-3 py-2 rounded-md cursor-pointer text-sm flex gap-2 items-start ${activeAgent === sub.id ? 'bg-indigo-100 text-indigo-700 font-semibold' : 'text-gray-600 hover:bg-gray-100'}`
+                },
+                  e('img', { src: './image/n8n_logo.png', alt: 'n8n', className: 'w-4 h-4 mt-0.5 flex-shrink-0' }),
+                  e('div', { className: 'font-medium flex-1' }, sub.name)
+                ))
+              )
+            ))
+          ),
+          e('div', {
+            className: 'bg-gray-200 cursor-col-resize hover:bg-indigo-400 transition-colors flex-shrink-0 absolute top-0 right-0 h-full',
+            onMouseDown: () => setIsResizing(true),
+            style: { cursor: 'col-resize', width: '3px' }
+          })
+        ),
+
+        e('main', { className: 'flex-1 flex flex-col bg-white overflow-hidden' },
+          e('div', { className: 'border-b border-gray-200 bg-gray-50 px-8 py-3 flex-shrink-0' },
+            e('div', { className: 'flex items-center justify-between' },
+              e('div', { className: 'flex items-center gap-4' },
+                e('div', { className: 'flex items-center gap-2 text-gray-600 text-sm' },
+                  e('span', null, 'COREE\'s AI Tools Resource'),
+                  e('span', null, '•'),
+                  e('span', null, '')
+                )
+              ),
+              e('div', { className: 'flex gap-2' },
+                ROLE === 'admin' && e('button', {
+                  onClick: () => isEditMode ? saveContent() : setIsEditMode(true),
+                  className: 'px-4 py-1.5 bg-white hover:bg-gray-50 border border-gray-300 text-gray-700 rounded-md text-sm font-semibold'
+                }, isEditMode ? '✓ 편집완료' : '편집'),
+                ROLE === 'admin' && e('button', {
+                  onClick: () => fetch(`${API_URL}/load.php?agentId=all`).then(r => r.json()).then(setEditableContent),
+                  className: 'px-3 py-1.5 border border-gray-300 rounded-md hover:bg-gray-100 text-sm'
+                }, 'Raw'),
+                ROLE === 'admin' && e('button', {
+                  onClick: () => navigator.clipboard.writeText(currentContent).then(() => showToast('✓ 복사됨')),
+                  className: 'px-3 py-1.5 border border-gray-300 rounded-md hover:bg-gray-100 text-sm'
+                }, 'Copy')
+              )
+            )
+          ),
+
+          e('div', { className: 'flex-1 overflow-y-auto px-8 py-6' },
+            isEditMode
+              ? e('textarea', {
+                  value: currentContent,
+                  onChange: ev => updateContent(ev.target.value),
+                  className: 'w-full h-full p-4 border border-gray-300 rounded-md font-mono text-sm resize-none focus:outline-none focus:ring-2 focus:ring-indigo-500',
+                  style: { minHeight: '500px' },
+                  placeholder: '내용을 입력하세요... (3초 후 자동 저장)'
+                })
+              : e('div', null,
+                  e('div', { className: 'flex items-center justify-between mb-6' },
+                    e('h1', { className: 'text-3xl font-bold text-slate-700 border-b-0 pb-0 mb-0' }, currentAgent.name),
+                    e('div', { className: 'flex gap-3' },
+                      (ROLE === 'admin' && currentAgent.chatUrl) && e('button', {
+                        onClick: () => setShowChatInterface(!showChatInterface),
+                        className: 'px-4 py-2 bg-white hover:bg-gray-50 border border-gray-300 text-gray-700 rounded-md text-sm font-semibold'
+                      }, showChatInterface ? '← 설명으로 돌아가기' : '실행하기'),
+                      (ROLE === 'admin' && currentAgent.n8nUrl) && e('a', {
+                        href: currentAgent.n8nUrl,
+                        target: '_blank',
+                        rel: 'noopener noreferrer',
+                        className: 'px-4 py-2 bg-white border border-gray-300 rounded-md flex items-center justify-center hover:bg-gray-50'
+                      }, e('img', { src: './image/n8n_logo.png', alt: 'n8n', className: 'h-5' }))
+                    )
+                  ),
+                  (showChatInterface && currentAgent.chatUrl && ROLE === 'admin')
+                    ? e('div', { className: 'w-full h-[calc(100vh-230px)] border border-gray-300 rounded-lg overflow-hidden' },
+                        e('iframe', {
+                          src: currentAgent.chatUrl,
+                          className: 'w-full h-full',
+                          frameBorder: '0',
+                          allow: 'clipboard-write'
+                        })
+                      )
+                    : e('div', {
+                        className: 'prose prose-slate max-w-none',
+                        dangerouslySetInnerHTML: { __html: marked.parse(currentContent).replace(/<h1>.*?<\/h1>/, '') }
+                      })
+                )
+          ),
+
+          e('div', { className: 'border-t border-gray-200 px-8 py-4 flex-shrink-0' },
+            e('p', { className: 'text-sm text-gray-600' },
+              '문의 : ',
+              e('a', { href: 'mailto:coree2k@gmail.com', className: 'text-indigo-600' }, 'coree2k@gmail.com')
+            )
+          )
+        )
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('app')).render(e(App));
+  </script>
+</body>
+</html>

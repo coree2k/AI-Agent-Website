@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+
+<!-- anti-inspection -->
+<script>
+(function(){
+  document.addEventListener('contextmenu', e => e.preventDefault(), {capture:true});
+  document.addEventListener('keydown', (e) => {
+    const k = (e.key||'').toLowerCase();
+    if ((e.ctrlKey && (k === 'u' || k === 's' || k === 'p')) ||
+        (e.ctrlKey && e.shiftKey && (k === 'i' || k === 'j' || k === 'c')) ||
+        (k === 'f12')) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+  }, {capture:true});
+})();
+</script>
+
+
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>COREE's AI Agents Resource</title>
+  <link rel="stylesheet" as="style" crossorigin href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css" />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+      font-family: 'Pretendard', -apple-system, BlinkMacSystemFont, system-ui, Roboto, sans-serif;
+    }
+  </style>
+
+    <script>
+    async function hashText(text) {
+      const enc = new TextEncoder().encode(text);
+      const digest = await crypto.subtle.digest('SHA-256', enc);
+      const arr = Array.from(new Uint8Array(digest));
+      return arr.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+    // Basic hardening: block right-click and common devtool shortcuts
+    document.addEventListener('contextmenu', e => e.preventDefault());
+    document.addEventListener('keydown', (e) => {
+      const k = e.key.toLowerCase();
+      if ((e.ctrlKey && (k === 'u' || k === 's' || k === 'p')) ||
+          (e.ctrlKey && e.shiftKey && (k === 'i' || k === 'j' || k === 'c')) ||
+          (k === 'f12')) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }, {capture:true});
+    </script>
+    
+</head>
+<body class="bg-gray-900 text-white">
+  <div id="app"></div>
+
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+
+  <script>
+    window.onload = function () {
+      if (typeof React === 'undefined' || typeof ReactDOM === 'undefined') {
+        document.getElementById('app').innerHTML =
+          '<div style="color:white;padding:20px;">Error: React failed to load.</div>';
+        return;
+      }
+
+      const { useState, createElement: e } = React;
+
+      function AIToolTester() {
+        const [loggedIn, setLoggedIn] = useState(!!localStorage.getItem('authUser'));
+
+        const agents = [
+          { id: 1,  name: 'Google Calendar Agent\n(Chat UI Simple Ver.)', description: 'Google Calendar 연동 AI Agent', tags: ['자동화','Calendar'] },
+          { id: 2,  name: 'Receipt 접수 Agent\n(OCR)', description: 'OCR 기반 영수증 처리 자동화', tags: ['OCR','자동화'] },
+          { id: 3,  name: 'AI RAG Agent 3종 SET\n(동반성장지수 평가기준, 사규)', description: '내부 문서 RAG 기반 검색·응답', tags: ['RAG','검색'] },
+          { id: 4,  name: 'Advanced RAG AI Agent (사규)\n(Reranker,qdrant DB Ver.)', description: 'Reranker 적용 고급 RAG Agent', tags: ['RAG','Advanced'] },
+          { id: 5,  name: '재무제표 분석 AI Agent', description: '한국/미국 주식 및 재무제표 통합 분석', tags: ['분석','Finance'] },
+          { id: 6,  name: '[월간] 공정위 하도급 정책 리서치 Agent\n(Perplexity)', description: '공정위 하도급 정책 월간 리서치', tags: ['리서치','월간'] },
+          { id: 7,  name: 'AI Newsletter Agent\n(긍정/부정 판단)', description: '뉴스 감성 분석 자동화', tags: ['분석','자동화'] },
+          { id: 8,  name: '[주간] Global AI 제품/서비스 리서치 Agent\n(Perplexity)', description: '글로벌 AI 트렌드 주간 리서치', tags: ['리서치','주간'] },
+          { id: 9,  name: 'Slack/카카오톡 - Google 통합서비스 Multi-Agent', description: '메신저·Google 서비스 통합 자동화', tags: ['자동화','통합'] },
+          { id: 10, name: '[마무리] RSS News Agent\n(Webhook,RSS Ver.)', description: 'RSS 기반 뉴스 수집 자동화', tags: ['자동화','RSS'] },
+          { id: 11, name: '[월간] Finance 리서치 Agent\n(Perplexity)', description: '금융 시장 월간 리서치', tags: ['리서치','Finance'] },
+          { id: 12, name: 'ULTIMATE AI RAG Agent\n(Supabase DB Ver.)', description: 'Supabase 기반 최고급 RAG Agent', tags: ['RAG','Ultimate'] },
+          { id: 13, name: '[월간] 부동산 정책 리서치 Agent\n(Perplexity)', description: '부동산 정책 월간 리서치', tags: ['리서치','월간'] },
+          { id: 14, name: 'Agent#14', description: '준비 중인 AI Agent', tags: ['준비중'], disabled: true },
+          { id: 15, name: 'Agent#15', description: '준비 중인 AI Agent', tags: ['준비중'], disabled: true },
+          { id: 16, name: 'Agent#16', description: '준비 중인 AI Agent', tags: ['준비중'], disabled: true }
+        ];
+
+        /** 로그인 섹션 **/
+        if (!loggedIn) {
+          return e('div', { className: 'min-h-screen flex items-center justify-center bg-gradient-to-br from-indigo-500 via-purple-500 to-pink-500' },
+            e('div', { className: 'bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md' },
+              e('div', { className: 'text-center mb-8' },
+                e('h1', { className: 'text-3xl font-bold text-gray-800 mb-2' }, "COREE's AI Tools"),
+                e('p', { className: 'text-gray-600' }, '로그인이 필요합니다')
+              ),
+              e('form', {
+                onSubmit: async (ev) => {
+                  ev.preventDefault();
+                  const formData = new FormData(ev.target);
+                  const username = formData.get('username');
+                  const password = formData.get('password');
+                  if (
+                    (await hashText(password) === '13a95c75b44f95ead23f47f0bf10667e57b44ec5150180c8a39a39361cf56169' && username === 'admin') || (await hashText(password) === 'f6e0a1e2ac41945a9aa7ff8a8aaa0cebc12a3bcc981a929ad5cf810a090e11ae' && username === 'guest')
+                  ) {
+                    localStorage.setItem('authUser', JSON.stringify({ username, role: (username === 'admin' ? 'admin' : 'guest') }));
+                    setLoggedIn(true);
+                  } else {
+                    alert('아이디 또는 비밀번호가 올바르지 않습니다.');
+                  }
+                },
+              },
+                e('div', { className: 'mb-4' },
+                  e('label', { className: 'block text-gray-700 text-sm font-semibold mb-2' }, '아이디'),
+                  e('input', { name: 'username', type: 'text', required: true,
+                    className: 'w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-800' })
+                ),
+                e('div', { className: 'mb-6' },
+                  e('label', { className: 'block text-gray-700 text-sm font-semibold mb-2' }, '비밀번호'),
+                  e('input', { name: 'password', type: 'password', required: true,
+                    className: 'w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500 text-gray-800' })
+                ),
+                e('button', { type: 'submit', className: 'w-full bg-indigo-600 hover:bg-indigo-700 text-white font-semibold py-3 rounded-lg transition' }, '로그인'),
+                e('div', { className: 'mt-6 pt-6 border-t border-gray-200 text-center text-sm text-gray-500' },
+                  '게스트 계정: guest / 111'
+                )
+              )
+            )
+          );
+        }
+
+        /** 랜딩 페이지 **/
+        return e('div', { className: 'h-screen flex flex-col bg-gradient-to-br from-slate-100 via-gray-100 to-slate-200 overflow-hidden' },
+          // 상단 타이틀 & 입장/로그아웃 버튼
+          e('section', { className: 'relative text-center h-32 bg-gradient-to-b from-white to-slate-50 flex items-center justify-center' },
+            e('div', { className: 'absolute top-6 right-8 flex gap-2' },
+              e('button', {
+                onClick: () => {
+                  sessionStorage.clear();
+                  setLoggedIn(false);
+                },
+                className: 'px-4 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-md text-sm font-semibold'
+              }, '로그아웃'),
+              e('button', {
+                onClick: () => {
+                  sessionStorage.setItem('fromLanding', 'true');
+                  window.location.href = './detail_page.html?agent=1';
+                },
+                className: 'px-4 py-2 bg-white hover:bg-gray-50 border border-gray-300 text-gray-700 rounded-md text-sm font-semibold'
+              }, '입장하기')
+            ),
+            e('div', null,
+              e('h1', { className: 'text-4xl font-bold text-slate-700 mb-2' }, "COREE's AI Tools Resource"),
+              e('p', { className: 'text-slate-600 text-base' }, 'Testing, Reviewing, and Automating AI Workflows')
+            )
+          ),
+          // 카드 리스트
+          e('section', { id: 'agents-section', className: 'flex-1 flex flex-col w-[90%] mx-auto py-4 overflow-hidden' },
+            e('h2', { className: 'text-2xl font-bold text-slate-700 text-center mb-6' }, 'AI Agents'),
+            e('div', { className: 'grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 pb-4' },
+              agents.map(agent =>
+                e('div', {
+                  key: agent.id,
+                  onClick: () => {
+                    // 비활성(14~16)은 클릭 무시
+                    if (agent.disabled) return;
+                    sessionStorage.setItem('fromLanding', 'true');
+                    window.location.href = `./detail_page.html?agent=${agent.id}`;
+                  },
+                  className:
+                    'bg-white rounded-2xl p-4 shadow-md transition-all duration-300 group border border-slate-200 h-[9.5rem] flex flex-col justify-between ' +
+                    (agent.disabled
+                      ? 'opacity-60 cursor-not-allowed'
+                      : 'hover:shadow-xl hover:-translate-y-1 cursor-pointer')
+                },
+                  e('div', null,
+                    e('h3', { className: 'text-base font-bold text-slate-800 ' + (agent.disabled ? '' : 'group-hover:text-indigo-600') + ' transition mb-2 whitespace-pre-line' }, agent.name),
+                    e('p', { className: 'text-slate-600 text-xs leading-relaxed' }, agent.description)
+                  ),
+                  e('div', { className: 'flex gap-1.5 mt-2' },
+                    agent.tags.map((tag, idx) =>
+                      e('span', { key: idx, className: 'px-2 py-0.5 text-xs font-medium rounded-md border border-gray-300 bg-white text-gray-700' }, tag)
+                    )
+                  )
+                )
+              )
+            )
+          ),
+          // 푸터
+          e('footer', { className: 'text-center py-3 text-slate-500 border-t border-slate-300 text-xs bg-white' },
+            '© 2025 COREE AI Tools · All rights reserved.'
+          )
+        );
+      }
+
+      ReactDOM.createRoot(document.getElementById('app')).render(React.createElement(AIToolTester));
+    };
+  </script>
+</body>
+</html>
