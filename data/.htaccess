@@ -1,0 +1,3 @@
+# 직접 접근 차단
+Order Deny,Allow
+Deny from all
